@@ -1,0 +1,36 @@
+# Neuromicon Transcriber Node - Configuration
+# Optimized for Windows (Local Processing)
+
+# ASR (Automatic Speech Recognition)
+asr:
+  model_size: "base" # Options: tiny, base, small, medium, large-v3. Lite default: medium
+  device: "auto" # options: cuda, cpu, auto
+  compute_type: "float16" # or int8 for even lower memory/CPU
+  language: "auto" # "auto", "ru", "en"
+
+# Diarization
+diarization:
+  enabled: true
+  min_speakers: 1
+  max_speakers: 3
+  embedding_model: "speechbrain/spkrec-ecapa-voxceleb"
+
+# Voice Fingerprinting
+voice_fingerprint:
+  enabled: true
+  threshold: 0.65 # Lowered to avoid "unknown" speakers
+  storage_path: "app/voice_db"
+
+# Semantic Clustering
+semantic_clustering:
+  enabled: false
+  model: "all-MiniLM-L6-v2"
+  method: "kmeans" # or hdbscan
+  max_clusters: 8
+
+# File Handling
+paths:
+  output_dir: "app/output"
+  temp_dir: "app/temp"
+  ffmpeg_path: "ffmpeg"
+  chunk_duration: 1800 # 30 minutes in seconds

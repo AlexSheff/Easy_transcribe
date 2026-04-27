@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/
+
+# Project Specific
+app/output/*
+!app/output/__init__.py
+app/temp/*
+!app/temp/__init__.py
+app/voice_db/*
+!app/voice_db/__init__.py
+app/models/*
+!app/models/__init__.py
+
+# OS
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log

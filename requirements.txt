@@ -1,0 +1,21 @@
+# Core AI Models
+faster-whisper
+pyannote.audio
+sentence-transformers
+speechbrain
+scikit-learn
+numpy
+pandas
+
+# Media Handling
+ffmpeg-python
+pydub
+
+# GUI
+PySide6
+
+# Utilities
+pyyaml
+tqdm
+torch
+setuptools
