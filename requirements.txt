@@ -19,3 +19,8 @@ pyyaml
 tqdm
 torch
 setuptools
+
+# Real-time Recording
+sounddevice
+soundfile
+webrtcvad

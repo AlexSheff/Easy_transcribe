@@ -6,6 +6,9 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QProgressBar, QComboBox, QFrame, QGridLayout)
 from PySide6.QtCore import Qt, QThread, Signal
 from app.pipeline.transcription_pipeline import TranscriptionPipeline
+from app.core.mic_recorder import MicRecorder
+import datetime
+import queue
 
 class InitWorker(QThread):
     finished = Signal()
@@ -63,6 +66,62 @@ class Worker(QThread):
         
         self.finished.emit(f"Done! Processed {total} files.")
 
+class RealTimeWorker(QThread):
+    text_ready = Signal(str)
+    progress = Signal(str)
+    
+    def __init__(self, transcriber, output_txt_path):
+        super().__init__()
+        self.transcriber = transcriber
+        self.output_txt_path = output_txt_path
+        self.chunk_queue = queue.Queue()
+        self.is_running = True
+        
+    def add_chunk(self, filepath):
+        self.chunk_queue.put(filepath)
+        
+    def stop(self):
+        self.is_running = False
+        # Add a dummy item to break the queue wait
+        self.chunk_queue.put(None)
+
+    def run(self):
+        while self.is_running or not self.chunk_queue.empty():
+            try:
+                filepath = self.chunk_queue.get(timeout=1.0)
+                if filepath is None:
+                    continue
+                
+                self.progress.emit("Transcribing...")
+                # Skip heavy pipeline, just use transcriber
+                segments = self.transcriber.transcribe(
+                    filepath,
+                    beam_size=5,
+                    vad_filter=True,
+                    language="ru",
+                    initial_prompt="Распознавание речи. Текст на русском или английском языке."
+                )
+                
+                full_text = " ".join([s["text"] for s in segments]).strip()
+                
+                if full_text:
+                    # Append to text file
+                    with open(self.output_txt_path, "a", encoding="utf-8") as f:
+                        f.write(full_text + " ")
+                    
+                    self.text_ready.emit(full_text)
+                    
+                # Clean up chunk
+                try:
+                    os.remove(filepath)
+                except:
+                    pass
+                    
+            except queue.Empty:
+                pass
+            except Exception as e:
+                self.progress.emit(f"Error in transcription: {e}")
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -73,6 +132,9 @@ class MainWindow(QMainWindow):
         self.processed_count = 0
         self.total_queue = 0
         self.active_workers = [] # Keep references to prevent GC
+        self.mic_recorder = None
+        self.realtime_worker = None
+        self.is_recording = False
         
         self.setup_ui()
         self.apply_styles()
@@ -112,6 +174,12 @@ class MainWindow(QMainWindow):
         self.btn_open.setObjectName("action_btn")
         self.btn_open.clicked.connect(self.select_file)
         sidebar_layout.addWidget(self.btn_open)
+        
+        self.btn_record = QPushButton("RECORD MIC")
+        self.btn_record.setObjectName("record_btn")
+        self.btn_record.clicked.connect(self.toggle_recording)
+        self.btn_record.setEnabled(False) # Disabled until init
+        sidebar_layout.addWidget(self.btn_record)
         
         sidebar_layout.addStretch()
         
@@ -200,6 +268,14 @@ class MainWindow(QMainWindow):
             QPushButton#action_btn:hover { background: #00ffcc; margin-top: -2px; }
             QPushButton#action_btn:disabled { background: #222; color: #444; }
 
+            QPushButton#record_btn {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff0055, stop:1 #ff55aa);
+                color: #fff; font-weight: 800; border: none; padding: 15px; border-radius: 10px; font-size: 13px;
+                text-transform: uppercase; margin-top: 10px;
+            }
+            QPushButton#record_btn:hover { background: #ff0055; margin-top: 8px; }
+            QPushButton#record_btn:disabled { background: #222; color: #444; margin-top: 10px; }
+
             QFrame#stat_card { background-color: #141414; border: 1px solid #222; border-radius: 12px; padding: 20px; }
             QLabel#stat_label { color: #00ffcc; font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; }
             QLabel#stat_value { color: white; font-size: 28px; font-weight: 800; }
@@ -218,6 +294,7 @@ class MainWindow(QMainWindow):
 
     def start_initialization(self, model_size=None):
         self.btn_open.setEnabled(False)
+        self.btn_record.setEnabled(False)
         self.model_combo.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 100)
@@ -237,6 +314,7 @@ class MainWindow(QMainWindow):
 
     def on_init_finished(self):
         self.btn_open.setEnabled(True)
+        self.btn_record.setEnabled(True)
         self.model_combo.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.status_label.setText("System Ready")
@@ -308,10 +386,74 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Ensure threads are stopped on close."""
+        if self.is_recording:
+            self.toggle_recording()
+            
         for worker in self.active_workers:
             worker.terminate()
             worker.wait()
         event.accept()
+
+    def toggle_recording(self):
+        if not self.is_recording:
+            self.start_recording()
+        else:
+            self.stop_recording()
+            
+    def start_recording(self):
+        self.is_recording = True
+        self.btn_open.setEnabled(False)
+        self.model_combo.setEnabled(False)
+        self.btn_record.setText("STOP RECORDING")
+        self.btn_record.setStyleSheet("background: #ff0000; color: white;")
+        
+        self.text_output.clear()
+        
+        # Create directories
+        now = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        output_dir = os.path.join(os.getcwd(), "app", "output", "Records", now)
+        os.makedirs(output_dir, exist_ok=True)
+        
+        txt_path = os.path.join(output_dir, f"{now}_transcript.txt")
+        self.text_output.append(f"<span style='color: #00ffcc;'><b>[SYSTEM]</b> Session started: {now}</span>\n")
+        
+        # Start Worker
+        self.realtime_worker = RealTimeWorker(self.pipeline.transcriber, txt_path)
+        self.realtime_worker.text_ready.connect(self.on_realtime_text)
+        self.realtime_worker.progress.connect(self.on_worker_progress)
+        self.realtime_worker.start()
+        
+        # Start Recorder
+        self.mic_recorder = MicRecorder(output_dir)
+        self.mic_recorder.chunk_ready.connect(self.realtime_worker.add_chunk)
+        self.mic_recorder.progress.connect(self.on_worker_progress)
+        self.mic_recorder.error.connect(self.on_error)
+        self.mic_recorder.start()
+        
+    def stop_recording(self):
+        self.is_recording = False
+        self.btn_open.setEnabled(True)
+        self.model_combo.setEnabled(True)
+        self.btn_record.setText("RECORD MIC")
+        self.btn_record.setStyleSheet("") # Reset to original style
+        
+        if self.mic_recorder:
+            self.mic_recorder.stop()
+            self.mic_recorder.wait()
+            self.mic_recorder = None
+            
+        if self.realtime_worker:
+            self.realtime_worker.stop()
+            self.realtime_worker.wait()
+            self.realtime_worker = None
+            
+        self.text_output.append(f"\n<span style='color: #ff5555;'><b>[SYSTEM]</b> Recording stopped.</span>")
+
+    def on_realtime_text(self, text):
+        self.text_output.append(f"<span style='color: #ffffff;'>{text}</span>")
+        # Scroll to bottom
+        scrollbar = self.text_output.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
 
 if __name__ == "__main__":
     from PySide6.QtWidgets import QApplication

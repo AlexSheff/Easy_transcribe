@@ -9,6 +9,7 @@
 ## ✨ Key Features
 
 - 🔒 **100% Offline:** Your data never leaves your computer. No API keys, no subscriptions.
+- 🎙️ **Real-time Microphone Transcription:** Record and transcribe your voice instantly, saving chunks directly to your disk with auto-silence detection.
 - 🗣️ **Speaker Diarization:** High-precision adaptive utterance-chunked diarization for accurate turn-taking in fast dialogs.
 - 🧬 **Voice Fingerprinting:** Persistently identifies speakers across different files and sessions using AHC clustering.
 - 🧠 **Semantic Clustering:** Groups transcript segments by meaning to help you find what matters.
