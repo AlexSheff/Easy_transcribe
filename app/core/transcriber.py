@@ -124,11 +124,21 @@ class Transcriber:
 
         results = []
         for segment in segments:
-            results.append({
+            seg_data = {
                 "start": round(segment.start, 2),
                 "end": round(segment.end, 2),
                 "text": segment.text.strip(),
                 "language": info.language
-            })
+            }
+            if hasattr(segment, 'words') and segment.words:
+                seg_data["words"] = [
+                    {
+                        "word": w.word,
+                        "start": round(w.start, 2),
+                        "end": round(w.end, 2),
+                        "probability": round(w.probability, 2)
+                    } for w in segment.words
+                ]
+            results.append(seg_data)
             
         return results

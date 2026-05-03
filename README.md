@@ -9,8 +9,8 @@
 ## ✨ Key Features
 
 - 🔒 **100% Offline:** Your data never leaves your computer. No API keys, no subscriptions.
-- 🗣️ **Speaker Diarization:** Automatically detects and labels different speakers in a conversation.
-- 🧬 **Voice Fingerprinting:** Persistently identifies speakers across different files and sessions.
+- 🗣️ **Speaker Diarization:** High-precision adaptive utterance-chunked diarization for accurate turn-taking in fast dialogs.
+- 🧬 **Voice Fingerprinting:** Persistently identifies speakers across different files and sessions using AHC clustering.
 - 🧠 **Semantic Clustering:** Groups transcript segments by meaning to help you find what matters.
 - 🌍 **Multilingual Support:** High-quality transcription for English, Russian, Tagalog, and more.
 - 📂 **Multi-format Support:** Handles MP4, MKV, AVI, MP3, WAV, and FLAC.
@@ -33,8 +33,8 @@ Getting started is as easy as two clicks:
 
 ## 🛠️ Tech Stack
 
-- **Core Engine:** Faster-Whisper (ASR), Pyannote.audio (Diarization)
-- **Intelligence Layer:** Sentence-Transformers, Scikit-learn
+- **Core Engine:** Faster-Whisper (ASR), SpeechBrain (Diarization)
+- **Intelligence Layer:** Sentence-Transformers, Scikit-learn (AHC Clustering)
 - **GUI:** PySide6 (Qt)
 - **Processing:** FFmpeg, PyTorch
 

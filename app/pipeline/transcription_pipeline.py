@@ -112,6 +112,10 @@ class TranscriptionPipeline:
                     for seg in chunk_segments:
                         seg["start"] += chunk_start
                         seg["end"] += chunk_start
+                        if "words" in seg:
+                            for w in seg["words"]:
+                                w["start"] += chunk_start
+                                w["end"] += chunk_start
                         all_segments.append(seg)
                     self.audio_processor.cleanup(chunk_path)
                     # Clear memory after each chunk
@@ -121,43 +125,178 @@ class TranscriptionPipeline:
             else:
                 all_segments = self.transcriber.transcribe(full_wav_path, **transcribe_kwargs)
 
-            # 4. Advanced Window-based Diarization
+            # 4. Adaptive Chunking & AHC Diarization
             if self.fingerprinter and all_segments:
-                self.logger.info(f"Starting diarization for {len(all_segments)} segments")
-                final_segments = []
+                self.logger.info("Starting Utterance-Chunked AHC Diarization")
+                
+                # Extract all words
+                words = []
                 for seg in all_segments:
-                    seg_duration = seg["end"] - seg["start"]
-                    
-                    # If segment is short, do single identification
-                    if seg_duration < 4.0:
-                        embedding = self.fingerprinter.extract_embedding(full_wav_path, seg["start"], seg["end"])
-                        seg["speaker_id"] = self.fingerprinter.identify_speaker(embedding)
-                        final_segments.append(seg)
+                    if "words" in seg:
+                        words.extend(seg["words"])
                     else:
-                        # Multi-window analysis
-                        windows = []
-                        window_size = 2.0
-                        step = 1.0
+                        # Fallback if no word timestamps
+                        words.append({"word": seg["text"], "start": seg["start"], "end": seg["end"]})
+
+                # Build adaptive chunks
+                chunks = []
+                current_words = []
+                chunk_start = None
+                
+                for w in words:
+                    if not current_words:
+                        current_words.append(w)
+                        chunk_start = w["start"]
+                    else:
+                        prev_w = current_words[-1]
+                        pause = w["start"] - prev_w["end"]
+                        duration = w["end"] - chunk_start
                         
-                        curr = seg["start"]
-                        while curr + window_size <= seg["end"]:
-                            emb = self.fingerprinter.extract_embedding(full_wav_path, curr, curr + window_size)
-                            windows.append(self.fingerprinter.identify_speaker(emb))
-                            curr += step
-                        
-                        if not windows:
-                            embedding = self.fingerprinter.extract_embedding(full_wav_path, seg["start"], seg["end"])
-                            seg["speaker_id"] = self.fingerprinter.identify_speaker(embedding)
-                            final_segments.append(seg)
+                        if pause > 0.4 or duration > 3.0:
+                            if duration >= 0.25: # minimum duration for embedding
+                                chunks.append({"words": current_words, "start": chunk_start, "end": current_words[-1]["end"]})
+                                current_words = [w]
+                                chunk_start = w["start"]
+                            else:
+                                current_words.append(w)
                         else:
-                            from collections import Counter
-                            counts = Counter(windows)
-                            most_common, freq = counts.most_common(1)[0]
-                            seg["speaker_id"] = most_common
-                            if freq / len(windows) <= 0.7:
-                                seg["text"] = f"[(?)] {seg['text']}"
-                            final_segments.append(seg)
-                all_segments = final_segments
+                            current_words.append(w)
+                            
+                if current_words:
+                    duration = current_words[-1]["end"] - chunk_start
+                    if duration >= 0.25 or not chunks:
+                        chunks.append({"words": current_words, "start": chunk_start, "end": current_words[-1]["end"]})
+                    else:
+                        chunks[-1]["words"].extend(current_words)
+                        chunks[-1]["end"] = current_words[-1]["end"]
+
+                # Extract embeddings
+                import numpy as np
+                from scipy.spatial.distance import cosine
+                from sklearn.cluster import AgglomerativeClustering
+                
+                valid_chunks = []
+                invalid_chunks = []
+                chunk_embeddings = []
+                for chunk in chunks:
+                    emb = self.fingerprinter.extract_embedding(full_wav_path, chunk["start"], chunk["end"])
+                    if emb is not None:
+                        valid_chunks.append(chunk)
+                        chunk_embeddings.append(emb)
+                    else:
+                        chunk["speaker_id"] = "unknown"
+                        chunk["uncertain"] = True
+                        invalid_chunks.append(chunk)
+                        
+                if valid_chunks and len(valid_chunks) > 0:
+                    X = np.array(chunk_embeddings)
+                    dist_threshold = 1.0 - self.fingerprinter.threshold
+                    
+                    if len(X) > 1:
+                        clustering = AgglomerativeClustering(
+                            n_clusters=None,
+                            metric="cosine",
+                            linkage="average",
+                            distance_threshold=dist_threshold
+                        )
+                        labels = clustering.fit_predict(X)
+                    else:
+                        labels = np.array([0])
+                        
+                    # Map clusters to Voice DB
+                    cluster_speaker_ids = {}
+                    cluster_centroids = {}
+                    
+                    for label in np.unique(labels):
+                        cluster_indices = np.where(labels == label)[0]
+                        cluster_embs = X[cluster_indices]
+                        centroid = np.mean(cluster_embs, axis=0)
+                        
+                        # Normalize centroid
+                        norm = np.linalg.norm(centroid)
+                        if norm > 0:
+                            centroid = centroid / norm
+                            
+                        speaker_id = self.fingerprinter.identify_speaker(centroid)
+                        cluster_centroids[label] = centroid
+                        cluster_speaker_ids[label] = speaker_id
+                        
+                    # Assign speakers to chunks and assess confidence
+                    for i, chunk in enumerate(valid_chunks):
+                        label = labels[i]
+                        emb = X[i]
+                        centroid = cluster_centroids[label]
+                        dist = cosine(emb, centroid)
+                        
+                        chunk["speaker_id"] = cluster_speaker_ids[label]
+                        chunk["uncertain"] = dist > (dist_threshold * 0.8)
+
+                    # Reconstruct segments from all chunks (valid + invalid)
+                    all_chunks = valid_chunks + invalid_chunks
+                    all_chunks.sort(key=lambda x: x["start"])
+                    
+                    final_segments = []
+                    current_seg = None
+                    
+                    for chunk in all_chunks:
+                        # Clean words
+                        text = "".join([w["word"] if w["word"].startswith((" ", ".", ",", "?", "!")) else " " + w["word"] for w in chunk["words"]]).strip()
+                        if not text:
+                            continue
+                            
+                        if chunk["uncertain"]:
+                            text = f"[(?)] {text}"
+                            
+                        if current_seg is None:
+                            current_seg = {
+                                "start": chunk["start"],
+                                "end": chunk["end"],
+                                "text": text,
+                                "speaker_id": chunk["speaker_id"],
+                                "uncertain": chunk["uncertain"]
+                            }
+                        else:
+                            pause = chunk["start"] - current_seg["end"]
+                            # Merge if same speaker, no uncertainty, and small pause
+                            if chunk["speaker_id"] == current_seg["speaker_id"] and pause < 1.0 and not chunk["uncertain"] and not current_seg.get("uncertain", False):
+                                current_seg["end"] = chunk["end"]
+                                current_seg["text"] += " " + text
+                            else:
+                                final_segments.append(current_seg)
+                                current_seg = {
+                                    "start": chunk["start"],
+                                    "end": chunk["end"],
+                                    "text": text,
+                                    "speaker_id": chunk["speaker_id"],
+                                    "uncertain": chunk["uncertain"]
+                                }
+                    if current_seg:
+                        final_segments.append(current_seg)
+                        
+                    all_segments = final_segments
+                else:
+                    self.logger.warning("No valid chunks extracted for diarization, fallback to unknown.")
+                    # Fallback to invalid chunks if everything failed
+                    all_chunks = invalid_chunks
+                    all_chunks.sort(key=lambda x: x["start"])
+                    final_segments = []
+                    current_seg = None
+                    for chunk in all_chunks:
+                        text = "".join([w["word"] if w["word"].startswith((" ", ".", ",", "?", "!")) else " " + w["word"] for w in chunk["words"]]).strip()
+                        if not text: continue
+                        text = f"[(?)] {text}"
+                        if current_seg is None:
+                            current_seg = {"start": chunk["start"], "end": chunk["end"], "text": text, "speaker_id": "unknown", "uncertain": True}
+                        else:
+                            pause = chunk["start"] - current_seg["end"]
+                            if pause < 1.0:
+                                current_seg["end"] = chunk["end"]
+                                current_seg["text"] += " " + text
+                            else:
+                                final_segments.append(current_seg)
+                                current_seg = {"start": chunk["start"], "end": chunk["end"], "text": text, "speaker_id": "unknown", "uncertain": True}
+                    if current_seg: final_segments.append(current_seg)
+                    all_segments = final_segments
 
             # 5. Advanced Speaker Smoothing
             if len(all_segments) >= 3:
