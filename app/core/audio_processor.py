@@ -82,6 +82,40 @@ class AudioProcessor:
             self.logger.error(f"Generic extraction error: {e}")
             raise
 
+    def convert_to_wav(self, input_path, output_dir):
+        """
+        Converts media file to high-quality WAV in a specific directory.
+        """
+        input_file = Path(input_path)
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        output_file = out_dir / f"{input_file.stem}.wav"
+
+        self.logger.info(f"Converting to WAV: {input_path} -> {output_file}")
+        
+        try:
+            abs_input = str(Path(input_path).absolute())
+            abs_output = str(output_file.absolute())
+
+            stream = ffmpeg.input(abs_input)
+            stream = ffmpeg.output(
+                stream, 
+                abs_output, 
+                acodec='pcm_s16le', 
+                ar='44100',
+                loglevel='quiet'
+            )
+            ffmpeg.run(stream, overwrite_output=True)
+            return abs_output
+        except ffmpeg.Error as e:
+            err_msg = e.stderr.decode() if e.stderr else str(e)
+            self.logger.error(f"FFmpeg conversion error: {err_msg}")
+            raise RuntimeError(f"FFmpeg conversion failed: {err_msg}")
+        except Exception as e:
+            self.logger.error(f"Generic conversion error: {e}")
+            raise
+
     @staticmethod
     def cleanup(file_path):
         """Removes temporary audio files."""

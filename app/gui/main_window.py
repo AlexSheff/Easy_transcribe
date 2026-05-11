@@ -66,6 +66,38 @@ class Worker(QThread):
         
         self.finished.emit(f"Done! Processed {total} files.")
 
+class ConvertWorker(QThread):
+    finished = Signal(str)
+    progress = Signal(str)
+    stats_update = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self, audio_processor, file_paths, output_dir):
+        super().__init__()
+        self.audio_processor = audio_processor
+        self.file_paths = file_paths
+        self.output_dir = output_dir
+
+    def run(self):
+        total = len(self.file_paths)
+        for i, path in enumerate(self.file_paths):
+            try:
+                filename = os.path.basename(path)
+                self.progress.emit(f"[{i+1}/{total}] Converting: {filename}...")
+                
+                export_path = self.audio_processor.convert_to_wav(path, self.output_dir)
+                
+                self.stats_update.emit({
+                    "last_file": filename,
+                    "processed_count": i + 1,
+                    "total_count": total
+                })
+                self.progress.emit(f"Finished: {filename} -> {os.path.basename(export_path)}")
+            except Exception as e:
+                self.error.emit(f"Error converting {os.path.basename(path)}: {str(e)}")
+        
+        self.finished.emit(f"Conversion Done! Processed {total} files.")
+
 class RealTimeWorker(QThread):
     text_ready = Signal(str)
     progress = Signal(str)
@@ -175,6 +207,11 @@ class MainWindow(QMainWindow):
         self.btn_open.clicked.connect(self.select_file)
         sidebar_layout.addWidget(self.btn_open)
         
+        self.btn_convert = QPushButton("CONVERT TO WAV")
+        self.btn_convert.setObjectName("convert_btn")
+        self.btn_convert.clicked.connect(self.select_files_for_conversion)
+        sidebar_layout.addWidget(self.btn_convert)
+        
         self.btn_record = QPushButton("RECORD MIC")
         self.btn_record.setObjectName("record_btn")
         self.btn_record.clicked.connect(self.toggle_recording)
@@ -268,6 +305,14 @@ class MainWindow(QMainWindow):
             QPushButton#action_btn:hover { background: #00ffcc; margin-top: -2px; }
             QPushButton#action_btn:disabled { background: #222; color: #444; }
 
+            QPushButton#convert_btn {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ffcc00, stop:1 #ff9900);
+                color: #000; font-weight: 800; border: none; padding: 15px; border-radius: 10px; font-size: 13px;
+                text-transform: uppercase; margin-top: 10px;
+            }
+            QPushButton#convert_btn:hover { background: #ffcc00; margin-top: 8px; }
+            QPushButton#convert_btn:disabled { background: #222; color: #444; margin-top: 10px; }
+
             QPushButton#record_btn {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #ff0055, stop:1 #ff55aa);
                 color: #fff; font-weight: 800; border: none; padding: 15px; border-radius: 10px; font-size: 13px;
@@ -294,6 +339,7 @@ class MainWindow(QMainWindow):
 
     def start_initialization(self, model_size=None):
         self.btn_open.setEnabled(False)
+        self.btn_convert.setEnabled(False)
         self.btn_record.setEnabled(False)
         self.model_combo.setEnabled(False)
         self.progress_bar.setVisible(True)
@@ -314,6 +360,7 @@ class MainWindow(QMainWindow):
 
     def on_init_finished(self):
         self.btn_open.setEnabled(True)
+        self.btn_convert.setEnabled(True)
         self.btn_record.setEnabled(True)
         self.model_combo.setEnabled(True)
         self.progress_bar.setVisible(False)
@@ -331,6 +378,51 @@ class MainWindow(QMainWindow):
         )
         if file_paths:
             self.start_processing(file_paths)
+
+    def select_files_for_conversion(self):
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self, "Select Media to Convert", "", "Media Files (*.mp4 *.mkv *.mp3 *.m4a *.webm *.avi *.mov)"
+        )
+        if file_paths:
+            self.start_conversion(file_paths)
+
+    def start_conversion(self, file_paths):
+        self.btn_open.setEnabled(False)
+        self.btn_convert.setEnabled(False)
+        self.btn_record.setEnabled(False)
+        self.model_combo.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
+        self.text_output.clear()
+        
+        self.total_queue = len(file_paths)
+        self.processed_count = 0
+        self.update_stats()
+        
+        output_dir = os.path.join(os.getcwd(), "app", "output", "Converted")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        self.text_output.append(f"<span style='color: #ffcc00;'><b>[SYSTEM]</b> Conversion queue initialized: {len(file_paths)} files.</span>\n")
+        
+        worker = ConvertWorker(self.pipeline.audio_processor, file_paths, output_dir)
+        worker.progress.connect(self.on_worker_progress)
+        worker.stats_update.connect(self.on_stats_update)
+        worker.finished.connect(self.on_conversion_finished)
+        worker.error.connect(self.on_error)
+        
+        self.active_workers.append(worker)
+        worker.start()
+
+    def on_conversion_finished(self, msg):
+        self.btn_open.setEnabled(True)
+        self.btn_convert.setEnabled(True)
+        self.btn_record.setEnabled(True)
+        self.model_combo.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        self.status_label.setText("Conversion Finished")
+        self.text_output.append(f"\n<span style='color: #ffcc00;'><b>[DONE]</b> {msg}</span>")
+        # Clean up
+        self.active_workers = [w for w in self.active_workers if w.isRunning()]
 
     def start_processing(self, file_paths):
         self.btn_open.setEnabled(False)
@@ -368,6 +460,8 @@ class MainWindow(QMainWindow):
 
     def on_finished(self, msg):
         self.btn_open.setEnabled(True)
+        self.btn_convert.setEnabled(True)
+        self.btn_record.setEnabled(True)
         self.model_combo.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.status_label.setText("Batch Processing Finished")
@@ -377,6 +471,8 @@ class MainWindow(QMainWindow):
 
     def on_error(self, message):
         self.btn_open.setEnabled(True)
+        self.btn_convert.setEnabled(True)
+        self.btn_record.setEnabled(True)
         self.model_combo.setEnabled(True)
         self.progress_bar.setVisible(False)
         self.status_label.setText("Operational Error")
@@ -403,6 +499,7 @@ class MainWindow(QMainWindow):
     def start_recording(self):
         self.is_recording = True
         self.btn_open.setEnabled(False)
+        self.btn_convert.setEnabled(False)
         self.model_combo.setEnabled(False)
         self.btn_record.setText("STOP RECORDING")
         self.btn_record.setStyleSheet("background: #ff0000; color: white;")
@@ -433,6 +530,7 @@ class MainWindow(QMainWindow):
     def stop_recording(self):
         self.is_recording = False
         self.btn_open.setEnabled(True)
+        self.btn_convert.setEnabled(True)
         self.model_combo.setEnabled(True)
         self.btn_record.setText("RECORD MIC")
         self.btn_record.setStyleSheet("") # Reset to original style

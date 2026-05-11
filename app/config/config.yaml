@@ -3,7 +3,7 @@
 
 # ASR (Automatic Speech Recognition)
 asr:
-  model_size: "base" # Options: tiny, base, small, medium, large-v3. Lite default: medium
+  model_size: "medium" # Options: tiny, base, small, medium, large-v3. Lite default: medium
   device: "auto" # options: cuda, cpu, auto
   compute_type: "float16" # or int8 for even lower memory/CPU
   language: "auto" # "auto", "ru", "en"
