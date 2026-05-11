@@ -1,5 +1,7 @@
 # 🎙️ Easy Transcriber
 
+![Easy Transcriber Logo](assets/logo.png)
+
 **Easy Transcriber** is a powerful, fully offline desktop application for high-accuracy audio/video transcription, speaker diarization, and voice fingerprinting. Built for privacy and performance — your data never leaves your machine.
 
 ---
