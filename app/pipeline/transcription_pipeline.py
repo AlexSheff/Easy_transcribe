@@ -82,6 +82,10 @@ class TranscriptionPipeline:
         import gc
         
         try:
+            # 0. Clear Voice DB for a fresh session
+            if self.fingerprinter:
+                self.fingerprinter.clear()
+
             # 1. Extract & Normalize Audio
             full_wav_path = self.audio_processor.extract_audio(input_path)
             

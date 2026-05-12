@@ -12,7 +12,7 @@
 - 🎙️ **Real-time Microphone Recording** — Capture live speech with automatic silence detection (VAD), saving chunks instantly to disk.
 - 🎬 **MP4 / Video to WAV Converter** — Built-in converter: drop any MP4, MKV, or AVI file and get a clean WAV ready for transcription.
 - 🗣️ **Speaker Diarization** — Adaptive utterance-chunked agglomerative clustering for accurate turn-taking even in fast-paced dialogs.
-- 🧬 **Voice Fingerprinting** — Persistently identifies and remembers speakers across different files and sessions using ECAPA-TDNN embeddings.
+- 🧬 **Voice Fingerprinting** — Identifies up to 3 speakers per file using ECAPA-TDNN embeddings. The speaker database is automatically reset before each new transcription to ensure clean, accurate identification every run.
 - 🧠 **Semantic Clustering** — Groups transcript segments by meaning (optional, configurable).
 - 🌍 **Multilingual** — High-quality transcription for English, Russian, Tagalog, and many more via Faster-Whisper.
 - 📂 **Multi-format Input** — MP4, MKV, AVI, MP3, WAV, FLAC.
@@ -85,7 +85,7 @@ Easy_transcribe/
 │   │   └── main_window.py       # PySide6 main UI
 │   ├── pipeline/                # Processing pipeline orchestration
 │   ├── models/                  # Cached local model files
-│   ├── voice_db/                # Persistent speaker fingerprint database
+│   ├── voice_db/                # Session-scoped speaker fingerprint DB (auto-cleared each run)
 │   └── output/
 │       ├── Converted/           # MP4→WAV conversion results
 │       └── <session folders>/   # Transcripts per file/session

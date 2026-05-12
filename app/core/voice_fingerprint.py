@@ -1,4 +1,5 @@
 import os
+import shutil
 import torch
 import numpy as np
 from pathlib import Path
@@ -160,3 +161,16 @@ class VoiceFingerprint:
             json.dump(metadata, f, indent=4)
         
         self.speakers[speaker_id] = {"embedding": embedding, "metadata": metadata}
+
+    def clear(self):
+        """Clears all speaker embeddings from memory and disk."""
+        # Remove speaker directories from disk
+        for speaker_dir in self.db_path.iterdir():
+            if speaker_dir.is_dir() and speaker_dir.name.startswith("speaker_"):
+                try:
+                    shutil.rmtree(speaker_dir)
+                except Exception as e:
+                    self.logger.warning(f"Failed to remove {speaker_dir}: {e}")
+        # Clear in-memory state
+        self.speakers = {}
+        self.logger.info("Voice DB cleared for new session")
