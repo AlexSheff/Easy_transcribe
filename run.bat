@@ -2,13 +2,16 @@
 echo Starting Easy Transcriber...
 
 if not exist .venv (
-    echo [ERROR] Virtual environment not found. Please run 'setup.bat' first.
-    pause
-    exit /b 1
+    echo [WARNING] Virtual environment not found. Using global Python.
+) else (
+    if exist .venv\Scripts\activate.bat (
+        call .venv\Scripts\activate.bat
+    ) else if exist .venv\bin\activate.bat (
+        call .venv\bin\activate.bat
+    )
 )
 
-:: Activate venv and run app
-call .venv\Scripts\activate
+:: Run app
 python app.py
 
 if %errorlevel% neq 0 (

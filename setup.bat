@@ -31,7 +31,13 @@ if not exist .venv (
 
 :: Install Dependencies
 echo [2/3] Installing dependencies (this may take a few minutes)...
-call .venv\Scripts\activate
+if exist .venv\Scripts\activate.bat (
+    call .venv\Scripts\activate.bat
+) else if exist .venv\bin\activate.bat (
+    call .venv\bin\activate.bat
+) else (
+    echo [WARNING] Could not find activate script in .venv. Installing globally.
+)
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 if %errorlevel% neq 0 (

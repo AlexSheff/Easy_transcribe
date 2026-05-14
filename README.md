@@ -22,12 +22,13 @@
 
 ## 🚀 Quick Start (Windows)
 
-1. **Setup:** Double-click `setup.bat`
-   - Creates a Python virtual environment
+1. **Setup:** Double-click `setup.bat` (Recommended)
+   - Creates a Python virtual environment (`.venv`)
    - Installs all dependencies from `requirements.txt`
    - Checks for FFmpeg on your PATH
 
 2. **Launch:** Double-click `run.bat` (or `python app.py`)
+   - The launcher is smart: it automatically detects and activates `.venv` (whether built via Windows `Scripts` or Linux-style `bin`), or safely falls back to your global Python environment if you prefer managing dependencies yourself.
 
 > [!IMPORTANT]
 > **FFmpeg is required** for audio/video processing.
