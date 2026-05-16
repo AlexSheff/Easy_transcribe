@@ -12,7 +12,7 @@
 - 🎙️ **Real-time Microphone Recording** — Capture live speech with automatic silence detection (VAD), saving chunks instantly to disk.
 - 🎬 **MP4 / Video to WAV Converter** — Built-in converter: drop any MP4, MKV, or AVI file and get a clean WAV ready for transcription.
 - 🗣️ **Speaker Diarization** — Adaptive utterance-chunked agglomerative clustering for accurate turn-taking even in fast-paced dialogs.
-- ⚧ **Gender Detection** — Automatically identifies whether each speaker is Male or Female using a dedicated wav2vec2-based classifier. Speaker labels in output are set accordingly (e.g. `Male Speaker 1`, `Female Speaker 2`).
+- ⚧ **Gender Detection** — Automatically identifies whether each speaker is Male or Female using offline **pitch (F0) analysis** via `scipy`. Works without any additional downloads — no internet required.
 - 🧬 **Voice Fingerprinting** — Identifies speakers per file using ECAPA-TDNN embeddings (SpeechBrain). The speaker database is automatically reset before each new transcription to ensure clean, accurate identification every run.
 - 🧠 **Semantic Clustering** — Groups transcript segments by meaning (optional, configurable).
 - 🌍 **Multilingual** — High-quality transcription for English, Russian, Tagalog, and many more via Faster-Whisper.
@@ -34,9 +34,6 @@
 > [!IMPORTANT]
 > **FFmpeg is required** for audio/video processing.
 > Download from [ffmpeg.org](https://ffmpeg.org/) and add the `bin/` folder to your system PATH.
-
-> [!NOTE]
-> **On first launch**, the gender classification model (`alefiury/wav2vec2-large-xlsr-53-gender-recognition-oswas`, ~300 MB) will be automatically downloaded from HuggingFace. Internet connection required only for this initial download.
 
 ---
 
@@ -110,7 +107,7 @@ Easy_transcribe/
 | **ASR Engine** | [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2 backend) |
 | **Speaker Diarization** | SpeechBrain · ECAPA-TDNN · AHC Clustering |
 | **Voice Fingerprinting** | `speechbrain/spkrec-ecapa-voxceleb` |
-| **Gender Detection** | `alefiury/wav2vec2-large-xlsr-53-gender-recognition-oswas` (HuggingFace Transformers) |
+| **Gender Detection** | Offline pitch/F0 analysis (`scipy.signal.welch`) — no download required |
 | **Semantic Analysis** | Sentence-Transformers · Scikit-learn |
 | **GUI** | PySide6 (Qt6) |
 | **Audio/Video** | FFmpeg · PyDub · sounddevice · webrtcvad |

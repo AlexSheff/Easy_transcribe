@@ -6,7 +6,6 @@ speechbrain
 scikit-learn
 numpy
 pandas
-transformers
 
 # Media Handling
 ffmpeg-python

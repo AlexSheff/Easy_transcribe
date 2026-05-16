@@ -6,9 +6,9 @@ from pathlib import Path
 import json
 import logging
 from scipy.spatial.distance import cosine
+from scipy.signal import welch
 from speechbrain.inference.speaker import EncoderClassifier
 from scipy.io import wavfile
-from transformers import pipeline
 
 class VoiceFingerprint:
     def __init__(self, db_path="app/voice_db", threshold=0.70, device="auto", max_speakers=10):
@@ -33,18 +33,10 @@ class VoiceFingerprint:
             self.logger.error(f"Failed to load SpeechBrain: {e}")
             raise
 
-        self.logger.info("Initializing Gender Classifier...")
-        try:
-            # We use a lightweight audio classification pipeline for gender
-            pipe_device = 0 if self.device == "cuda" else -1
-            self.gender_classifier = pipeline(
-                "audio-classification", 
-                model="alefiury/wav2vec2-large-xlsr-53-gender-recognition-oswas",
-                device=pipe_device
-            )
-        except Exception as e:
-            self.logger.error(f"Failed to load Gender Classifier: {e}")
-            self.gender_classifier = None
+        # Gender detection is done offline via pitch (F0) analysis — no model download needed.
+        # Male fundamental frequency: ~80–165 Hz, Female: ~165–265 Hz.
+        self.gender_pitch_threshold = 165.0  # Hz boundary between male/female
+        self.logger.info("Gender detection: offline pitch-based F0 analysis (no download required)")
 
         self.speakers = self._load_db()
 
@@ -119,39 +111,58 @@ class VoiceFingerprint:
             return None
 
     def extract_gender(self, audio_path, start_sec, end_sec):
-        """Extracts gender from a specific audio segment."""
-        if not self.gender_classifier:
-            return "unknown"
-            
+        """
+        Estimates speaker gender via offline pitch (F0) analysis using Welch PSD.
+        Works without any model download.
+        Male voices: dominant F0 roughly 80–165 Hz.
+        Female voices: dominant F0 roughly 165–265 Hz.
+        Returns: 'male' | 'female' | 'unknown'
+        """
         try:
             fs, data = wavfile.read(str(audio_path))
             start_sample = int(start_sec * fs)
             end_sample = int(end_sec * fs)
-            
+
             if start_sample >= len(data):
                 return "unknown"
-                
+
             waveform = data[start_sample:end_sample]
-            
-            # Need at least 0.5s for gender detection
+
+            # Need at least 0.5s for reliable pitch estimation
             if len(waveform) < int(0.5 * fs):
                 return "unknown"
-                
+
             waveform = waveform.astype(np.float32)
             max_val = np.max(np.abs(waveform))
-            if max_val > 0:
-                waveform = waveform / max_val
-                
-            # The transformers pipeline expects the raw waveform array
-            # Model alefiury/wav2vec2-large-xlsr-53-gender-recognition-oswas expects 16kHz
-            results = self.gender_classifier(waveform)
-            if results and len(results) > 0:
-                # results is a list of dicts like [{'score': 0.9, 'label': 'male'}, ...]
-                best_label = results[0]['label']
-                return best_label.lower() # 'male' or 'female'
+            if max_val == 0:
+                return "unknown"
+            waveform = waveform / max_val
+
+            # Compute Power Spectral Density using Welch method
+            freqs, psd = welch(waveform, fs=fs, nperseg=min(512, len(waveform)))
+
+            # Focus on the voiced speech range: 60–300 Hz
+            voiced_mask = (freqs >= 60) & (freqs <= 300)
+            if not np.any(voiced_mask):
+                return "unknown"
+
+            voiced_psd = psd[voiced_mask]
+            voiced_freqs = freqs[voiced_mask]
+
+            # Find the dominant frequency peak in the voiced range
+            peak_idx = np.argmax(voiced_psd)
+            dominant_f0 = voiced_freqs[peak_idx]
+
+            self.logger.debug(f"Pitch F0: {dominant_f0:.1f} Hz (threshold {self.gender_pitch_threshold} Hz)")
+
+            if dominant_f0 < self.gender_pitch_threshold:
+                return "male"
+            else:
+                return "female"
+
         except Exception as e:
             self.logger.warning(f"Gender extraction failed: {e}")
-            
+
         return "unknown"
 
     def update_speaker_gender(self, speaker_id, gender):
