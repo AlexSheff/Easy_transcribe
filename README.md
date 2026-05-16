@@ -12,11 +12,12 @@
 - 🎙️ **Real-time Microphone Recording** — Capture live speech with automatic silence detection (VAD), saving chunks instantly to disk.
 - 🎬 **MP4 / Video to WAV Converter** — Built-in converter: drop any MP4, MKV, or AVI file and get a clean WAV ready for transcription.
 - 🗣️ **Speaker Diarization** — Adaptive utterance-chunked agglomerative clustering for accurate turn-taking even in fast-paced dialogs.
-- 🧬 **Voice Fingerprinting** — Identifies up to 3 speakers per file using ECAPA-TDNN embeddings. The speaker database is automatically reset before each new transcription to ensure clean, accurate identification every run.
+- ⚧ **Gender Detection** — Automatically identifies whether each speaker is Male or Female using a dedicated wav2vec2-based classifier. Speaker labels in output are set accordingly (e.g. `Male Speaker 1`, `Female Speaker 2`).
+- 🧬 **Voice Fingerprinting** — Identifies speakers per file using ECAPA-TDNN embeddings (SpeechBrain). The speaker database is automatically reset before each new transcription to ensure clean, accurate identification every run.
 - 🧠 **Semantic Clustering** — Groups transcript segments by meaning (optional, configurable).
 - 🌍 **Multilingual** — High-quality transcription for English, Russian, Tagalog, and many more via Faster-Whisper.
 - 📂 **Multi-format Input** — MP4, MKV, AVI, MP3, WAV, FLAC.
-- 📝 **Structured Export** — Generates Markdown, JSON, and SRT output files automatically.
+- 📝 **Structured Export** — Generates Markdown output files automatically with speaker gender labels and timestamps.
 
 ---
 
@@ -34,6 +35,9 @@
 > **FFmpeg is required** for audio/video processing.
 > Download from [ffmpeg.org](https://ffmpeg.org/) and add the `bin/` folder to your system PATH.
 
+> [!NOTE]
+> **On first launch**, the gender classification model (`alefiury/wav2vec2-large-xlsr-53-gender-recognition-oswas`, ~300 MB) will be automatically downloaded from HuggingFace. Internet connection required only for this initial download.
+
 ---
 
 ## ⚙️ Configuration
@@ -49,7 +53,7 @@ asr:
 diarization:
   enabled: true
   min_speakers: 1
-  max_speakers: 3
+  max_speakers: 10
 
 voice_fingerprint:
   enabled: true
@@ -78,10 +82,10 @@ Easy_transcribe/
 │   ├── core/
 │   │   ├── audio_processor.py   # FFmpeg wrapper, chunking, MP4→WAV conversion
 │   │   ├── transcriber.py       # Faster-Whisper ASR engine
-│   │   ├── voice_fingerprint.py # SpeechBrain ECAPA-TDNN speaker embeddings
+│   │   ├── voice_fingerprint.py # SpeechBrain ECAPA-TDNN + wav2vec2 gender detection
 │   │   ├── mic_recorder.py      # Real-time microphone capture with VAD
 │   │   ├── semantic_engine.py   # Sentence-transformer clustering
-│   │   └── exporter.py          # Markdown / JSON / SRT export
+│   │   └── exporter.py          # Markdown export with gender-aware speaker labels
 │   ├── gui/
 │   │   └── main_window.py       # PySide6 main UI
 │   ├── pipeline/                # Processing pipeline orchestration
@@ -106,6 +110,7 @@ Easy_transcribe/
 | **ASR Engine** | [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2 backend) |
 | **Speaker Diarization** | SpeechBrain · ECAPA-TDNN · AHC Clustering |
 | **Voice Fingerprinting** | `speechbrain/spkrec-ecapa-voxceleb` |
+| **Gender Detection** | `alefiury/wav2vec2-large-xlsr-53-gender-recognition-oswas` (HuggingFace Transformers) |
 | **Semantic Analysis** | Sentence-Transformers · Scikit-learn |
 | **GUI** | PySide6 (Qt6) |
 | **Audio/Video** | FFmpeg · PyDub · sounddevice · webrtcvad |
@@ -113,13 +118,15 @@ Easy_transcribe/
 
 ---
 
-## 📤 Output Formats
+## 📤 Output Format
 
-Each transcription session produces files in `app/output/<filename>/`:
+Each transcription produces a Markdown file in `app/output/`:
 
-- **`.md`** — Human-readable Markdown with speaker labels and timestamps
-- **`.json`** — Structured data for downstream processing
-- **`.srt`** — Subtitle file compatible with any media player
+```
+**00:00:05** (Male Speaker 001): Привет, как дела?
+
+**00:00:08** (Female Speaker 002): Всё хорошо, спасибо!
+```
 
 Converted videos land in `app/output/Converted/` as `.wav` files.
 

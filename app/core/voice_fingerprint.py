@@ -8,6 +8,7 @@ import logging
 from scipy.spatial.distance import cosine
 from speechbrain.inference.speaker import EncoderClassifier
 from scipy.io import wavfile
+from transformers import pipeline
 
 class VoiceFingerprint:
     def __init__(self, db_path="app/voice_db", threshold=0.70, device="auto", max_speakers=10):
@@ -31,6 +32,19 @@ class VoiceFingerprint:
         except Exception as e:
             self.logger.error(f"Failed to load SpeechBrain: {e}")
             raise
+
+        self.logger.info("Initializing Gender Classifier...")
+        try:
+            # We use a lightweight audio classification pipeline for gender
+            pipe_device = 0 if self.device == "cuda" else -1
+            self.gender_classifier = pipeline(
+                "audio-classification", 
+                model="alefiury/wav2vec2-large-xlsr-53-gender-recognition-oswas",
+                device=pipe_device
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to load Gender Classifier: {e}")
+            self.gender_classifier = None
 
         self.speakers = self._load_db()
 
@@ -104,6 +118,64 @@ class VoiceFingerprint:
             self.logger.warning(f"Embedding process failed at {start_sec:.1f}s: {e}")
             return None
 
+    def extract_gender(self, audio_path, start_sec, end_sec):
+        """Extracts gender from a specific audio segment."""
+        if not self.gender_classifier:
+            return "unknown"
+            
+        try:
+            fs, data = wavfile.read(str(audio_path))
+            start_sample = int(start_sec * fs)
+            end_sample = int(end_sec * fs)
+            
+            if start_sample >= len(data):
+                return "unknown"
+                
+            waveform = data[start_sample:end_sample]
+            
+            # Need at least 0.5s for gender detection
+            if len(waveform) < int(0.5 * fs):
+                return "unknown"
+                
+            waveform = waveform.astype(np.float32)
+            max_val = np.max(np.abs(waveform))
+            if max_val > 0:
+                waveform = waveform / max_val
+                
+            # The transformers pipeline expects the raw waveform array
+            # Model alefiury/wav2vec2-large-xlsr-53-gender-recognition-oswas expects 16kHz
+            results = self.gender_classifier(waveform)
+            if results and len(results) > 0:
+                # results is a list of dicts like [{'score': 0.9, 'label': 'male'}, ...]
+                best_label = results[0]['label']
+                return best_label.lower() # 'male' or 'female'
+        except Exception as e:
+            self.logger.warning(f"Gender extraction failed: {e}")
+            
+        return "unknown"
+
+    def update_speaker_gender(self, speaker_id, gender):
+        """Updates the gender metadata for a known speaker."""
+        if speaker_id not in self.speakers or gender == "unknown":
+            return
+            
+        # Capitalize for display (Male, Female)
+        display_gender = gender.capitalize()
+        
+        # Format the name
+        speaker_idx = speaker_id.split('_')[-1]
+        new_name = f"{display_gender} Speaker {speaker_idx}"
+        
+        self.speakers[speaker_id]["metadata"]["gender"] = display_gender
+        self.speakers[speaker_id]["metadata"]["name"] = new_name
+        
+        # Save to disk
+        metadata_path = self.db_path / speaker_id / "metadata.json"
+        with open(metadata_path, "w", encoding='utf-8') as f:
+            json.dump(self.speakers[speaker_id]["metadata"], f, indent=4)
+        
+        self.logger.info(f"Updated {speaker_id} gender to {display_gender}")
+
     def identify_speaker(self, embedding: np.ndarray) -> str:
         """
         Compares new embedding against DB.
@@ -151,10 +223,15 @@ class VoiceFingerprint:
         speaker_dir.mkdir(exist_ok=True)
         np.save(speaker_dir / "embedding.npy", embedding)
         
+        # Default name
+        speaker_idx = speaker_id.split('_')[-1]
+        name = f"Unknown Speaker {speaker_idx}"
+        
         metadata = {
-            "name": f"Unknown {speaker_id}",
+            "name": name,
             "confidence": 1.0,
-            "samples": 1
+            "samples": 1,
+            "gender": "Unknown"
         }
         metadata_path = speaker_dir / "metadata.json"
         with open(metadata_path, "w", encoding='utf-8') as f:

@@ -157,7 +157,7 @@ class TranscriptionPipeline:
                         duration = w["end"] - chunk_start
                         
                         if pause > 0.4 or duration > 3.0:
-                            if duration >= 0.25: # minimum duration for embedding
+                            if duration >= 1.2: # minimum duration for embedding
                                 chunks.append({"words": current_words, "start": chunk_start, "end": current_words[-1]["end"]})
                                 current_words = [w]
                                 chunk_start = w["start"]
@@ -168,7 +168,7 @@ class TranscriptionPipeline:
                             
                 if current_words:
                     duration = current_words[-1]["end"] - chunk_start
-                    if duration >= 0.25 or not chunks:
+                    if duration >= 1.2 or not chunks:
                         chunks.append({"words": current_words, "start": chunk_start, "end": current_words[-1]["end"]})
                     else:
                         chunks[-1]["words"].extend(current_words)
@@ -224,6 +224,16 @@ class TranscriptionPipeline:
                         speaker_id = self.fingerprinter.identify_speaker(centroid)
                         cluster_centroids[label] = centroid
                         cluster_speaker_ids[label] = speaker_id
+                        
+                        # Identify gender using the longest chunk in this cluster
+                        try:
+                            durations = [valid_chunks[i]["end"] - valid_chunks[i]["start"] for i in cluster_indices]
+                            longest_chunk_idx = cluster_indices[np.argmax(durations)]
+                            longest_chunk = valid_chunks[longest_chunk_idx]
+                            gender = self.fingerprinter.extract_gender(full_wav_path, longest_chunk["start"], longest_chunk["end"])
+                            self.fingerprinter.update_speaker_gender(speaker_id, gender)
+                        except Exception as e:
+                            self.logger.warning(f"Failed to identify gender for {speaker_id}: {e}")
                         
                     # Assign speakers to chunks and assess confidence
                     for i, chunk in enumerate(valid_chunks):
@@ -313,6 +323,12 @@ class TranscriptionPipeline:
                             all_segments[i]["speaker_id"] = prev if prev != "unknown" else next
                         if curr != prev and prev == next and (all_segments[i]["end"] - all_segments[i]["start"] < 1.5):
                             all_segments[i]["speaker_id"] = prev
+                            
+                    # Handle boundaries
+                    if all_segments[0]["speaker_id"] == "unknown" and all_segments[1]["speaker_id"] != "unknown":
+                        all_segments[0]["speaker_id"] = all_segments[1]["speaker_id"]
+                    if all_segments[-1]["speaker_id"] == "unknown" and all_segments[-2]["speaker_id"] != "unknown":
+                        all_segments[-1]["speaker_id"] = all_segments[-2]["speaker_id"]
 
             # 6. Semantic Clustering
             if self.config.get('semantic_clustering', {}).get('enabled', True) and self.semantic_engine and all_segments:
@@ -322,7 +338,7 @@ class TranscriptionPipeline:
                 )
             
             # 7. Export
-            export_path = self.exporter.export(all_segments, input_path)
+            export_path = self.exporter.export(all_segments, input_path, fingerprinter=self.fingerprinter)
             
             # 8. Cleanup
             self.audio_processor.cleanup(full_wav_path)
