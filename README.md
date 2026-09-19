@@ -24,12 +24,12 @@
 ## 🚀 Quick Start (Windows)
 
 1. **Prerequisites:** Install [Node.js (v18, v20 or newer LTS)](https://nodejs.org/). Make sure the option **"Add to PATH"** is checked during installation.
-2. **Install Dependencies:**
-   - Double-click **`install.bat`** (or run `npm install` in your terminal).
-   - *If run as Administrator or from another folder, `install.bat` automatically switches to the project root and detects standard Node.js installation paths.*
-3. **Launch Application:**
-   - Double-click **`run.bat`** (or run `npm run dev`).
-   - The launcher will automatically open your default browser at `http://localhost:3000`.
+2. **One-Click Launch:**
+   - Double-click **`start.bat`** (All-in-one launcher: automatically checks Node.js, installs dependencies on first run, starts the server, and opens your browser at `http://localhost:3000`).
+   - Alternatively:
+     - Run **`install.bat`** to install dependencies.
+     - Run **`run.bat`** to start the local server.
+     - Or in Command Prompt / PowerShell: run `node setup.js` followed by `npm run dev`.
 
 ---
 
