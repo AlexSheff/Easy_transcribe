@@ -11,7 +11,7 @@ import { RecorderModal } from './components/RecorderModal';
 import { SpeakerManagerModal } from './components/SpeakerManagerModal';
 import { SemanticViewModal } from './components/SemanticViewModal';
 import { ExportModal } from './components/ExportModal';
-import { Upload, Sparkles, SlidersHorizontal, Eye } from 'lucide-react';
+import { Upload, Sparkles, SlidersHorizontal, Eye, AlertTriangle, X } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [model, setModel] = useState<WhisperModelSize>('base');
@@ -20,6 +20,7 @@ export const App: React.FC = () => {
   const [showProgress, setShowProgress] = useState<boolean>(false);
   const [queueCount, setQueueCount] = useState<number>(0);
   const [processedCount, setProcessedCount] = useState<number>(0);
+  const [errorBanner, setErrorBanner] = useState<string | null>(null);
   
   const [logs, setLogs] = useState<LogEntry[]>([
     {
@@ -95,6 +96,7 @@ export const App: React.FC = () => {
 
   // Process a media file through the pipeline
   const processFile = async (file: File) => {
+    setErrorBanner(null);
     setIsProcessing(true);
     setShowProgress(true);
     setProgress(5);
@@ -140,7 +142,8 @@ export const App: React.FC = () => {
       addLog('DONE', `Identified ${Object.keys(result.speakers).length} distinct speaker voiceprints.`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      addLog('ERROR', `Error in ${file.name}: ${msg}`);
+      addLog('ERROR', `Error in ${file.name}:\n${msg}`);
+      setErrorBanner(msg);
       setStatus('Operational Error');
       setShowProgress(false);
     } finally {
@@ -291,6 +294,23 @@ export const App: React.FC = () => {
         {/* Tab Content */}
         {activeTab === 'console' ? (
           <div className="space-y-4">
+            {/* Error Troubleshooting Alert Banner */}
+            {errorBanner && (
+              <div className="bg-[#ff2222]/10 border border-[#ff4444]/40 rounded-xl p-4 text-xs font-mono text-[#ffdddd] flex items-start justify-between space-x-3">
+                <div className="flex items-start space-x-3">
+                  <AlertTriangle className="w-5 h-5 text-[#ff4444] shrink-0 mt-0.5" />
+                  <div className="whitespace-pre-wrap leading-relaxed">{errorBanner}</div>
+                </div>
+                <button
+                  onClick={() => setErrorBanner(null)}
+                  className="text-[#888888] hover:text-white shrink-0 p-1 cursor-pointer"
+                  title="Close"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
             {/* Terminal Output */}
             <TerminalOutput logs={logs} onClear={() => setLogs([])} />
 

@@ -81,7 +81,7 @@ export const TerminalOutput: React.FC<TerminalOutputProps> = ({ logs, onClear })
                 <span className={`shrink-0 font-bold ${badgeColor}`}>
                   [{log.type}]
                 </span>
-                <span className={`${msgColor} flex-1`}>{log.message}</span>
+                <span className={`${msgColor} flex-1 whitespace-pre-wrap`}>{log.message}</span>
               </div>
             );
           })
