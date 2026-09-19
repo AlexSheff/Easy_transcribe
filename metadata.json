@@ -1,0 +1,6 @@
+{
+  "name": "Easy Transcriber",
+  "description": "High-accuracy audio and video transcription, speaker diarization, voice fingerprinting, and semantic clustering node.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
