@@ -1,83 +1,76 @@
 @echo off
-chcp 65001 >nul
 title Easy Transcriber - Installation
-
-:: Ensure execution from the directory where this script is located
 cd /d "%~dp0"
 
-echo ===================================================================
-echo   NEUROMICON // EASY TRANSCRIBER - УСТАНОВКА / INSTALLATION
-echo ===================================================================
+echo ===================================================
+echo   EASY TRANSCRIBER - INSTALLATION
+echo ===================================================
 echo.
 
-:: Add default Node.js Windows installation paths to current session PATH if not already present
-:: NOTE: Keep on single lines without parentheses to prevent (x86) in PATH from breaking cmd parser!
-if exist "%ProgramFiles%\nodejs\node.exe" set "PATH=%ProgramFiles%\nodejs;%PATH%"
-if exist "%ProgramFiles(x86)%\nodejs\node.exe" set "PATH=%ProgramFiles(x86)%\nodejs;%PATH%"
-if exist "%LocalAppData%\Programs\node\nodejs\node.exe" set "PATH=%LocalAppData%\Programs\node\nodejs;%PATH%"
-if exist "%AppData%\npm" set "PATH=%PATH%;%AppData%\npm"
+node -v >nul 2>&1
+if errorlevel 1 goto :no_node
 
-where node >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo ===================================================================
-    echo  [ОШИБКА / ERROR] Node.js не найден на вашем компьютере!
-    echo ===================================================================
-    echo.
-    echo  Для запуска приложения требуется установленный Node.js (v18, v20 или новее LTS).
-    echo.
-    echo  Что нужно сделать:
-    echo    1. Скачайте Node.js с официального сайта:
-    echo       https://nodejs.org/
-    echo    2. Установите его, обязательно оставив галочку "Add to PATH".
-    echo    3. Если вы только что установили Node.js, перезапустите это окно
-    echo       или перезагрузите проводник/ПК.
-    echo.
-    echo ===================================================================
-    echo.
-    pause
-    exit /b 1
-)
-
-echo [1/2] Среда Node.js обнаружена:
-call node --version
-echo npm версия:
-call npm --version
+echo [1/2] Node.js environment detected:
+node -v
+npm -v
 echo.
 
-echo [2/2] Установка необходимых библиотек (npm install)...
-echo Пожалуйста, подождите несколько секунд...
+echo [2/2] Installing dependencies via npm...
+echo Please wait, this may take 1-2 minutes...
 echo.
 
 call npm install
-if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo [ПРЕДУПРЕЖДЕНИЕ] Стандартный 'npm install' завершился с кодом %ERRORLEVEL%.
-    echo Пробуем установить с ключом --legacy-peer-deps...
-    echo.
-    call npm install --legacy-peer-deps
-)
+if errorlevel 1 goto :npm_retry
+goto :success
 
-if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo ===================================================================
-    echo  [ОШИБКА / ERROR] Не удалось установить зависимости через npm.
-    echo ===================================================================
-    echo  Возможные причины:
-    echo   - Отсутствует подключение к интернету.
-    echo   - Ограничения прав доступа к папке (попробуйте перенести папку
-    echo     из системных папок на рабочий стол или диск D:).
-    echo ===================================================================
-    echo.
-    pause
-    exit /b 1
-)
-
+:npm_retry
 echo.
-echo ===================================================================
-echo  [УСПЕХ / SUCCESS] Все библиотеки успешно установлены!
-echo  Теперь вы можете запустить приложение, дважды кликнув на 'run.bat'.
-echo ===================================================================
+echo [WARNING] Standard npm install failed.
+echo Retrying with --legacy-peer-deps flag...
+echo.
+call npm install --legacy-peer-deps
+if errorlevel 1 goto :install_error
+goto :success
+
+:no_node
+echo.
+echo ===================================================
+echo [ERROR] Node.js is not installed or not in PATH!
+echo ===================================================
+echo.
+echo Node.js is required to run Easy Transcriber locally.
+echo.
+echo 1. Download and install Node.js LTS from:
+echo    https://nodejs.org/
+echo 2. During installation, make sure "Add to PATH" is checked.
+echo 3. After installing, close and reopen this window or restart PC.
+echo.
+echo ===================================================
+pause
+exit /b 1
+
+:install_error
+echo.
+echo ===================================================
+echo [ERROR] Failed to install dependencies.
+echo ===================================================
+echo Possible reasons:
+echo - No internet connection
+echo - Insufficient disk space or permissions
+echo.
+echo You can try running manually in Command Prompt:
+echo   npm install
+echo.
+echo ===================================================
+pause
+exit /b 1
+
+:success
+echo.
+echo ===================================================
+echo [SUCCESS] All dependencies installed successfully!
+echo You can now double-click 'run.bat' to start the app.
+echo ===================================================
 echo.
 pause
-
+exit /b 0

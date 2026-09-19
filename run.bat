@@ -1,60 +1,61 @@
 @echo off
-chcp 65001 >nul
-title Easy Transcriber - Neuromicon Node
-
-:: Ensure execution from the directory where this script is located
+title Easy Transcriber - Launcher
 cd /d "%~dp0"
 
-echo ===================================================================
-echo   NEUROMICON // EASY TRANSCRIBER - ЗАПУСК / LAUNCHER
-echo ===================================================================
+echo ===================================================
+echo   EASY TRANSCRIBER - LAUNCHER
+echo ===================================================
 echo.
 
-:: Add default Node.js Windows installation paths to current session PATH if not already present
-:: NOTE: Keep on single lines without parentheses to prevent (x86) in PATH from breaking cmd parser!
-if exist "%ProgramFiles%\nodejs\node.exe" set "PATH=%ProgramFiles%\nodejs;%PATH%"
-if exist "%ProgramFiles(x86)%\nodejs\node.exe" set "PATH=%ProgramFiles(x86)%\nodejs;%PATH%"
-if exist "%LocalAppData%\Programs\node\nodejs\node.exe" set "PATH=%LocalAppData%\Programs\node\nodejs;%PATH%"
-if exist "%AppData%\npm" set "PATH=%PATH%;%AppData%\npm"
+node -v >nul 2>&1
+if errorlevel 1 goto :no_node
 
-where node >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo ===================================================================
-    echo  [ОШИБКА / ERROR] Node.js не найден в системе!
-    echo ===================================================================
-    echo  Сначала запустите install.bat или установите Node.js с https://nodejs.org/
-    echo ===================================================================
-    echo.
-    pause
-    exit /b 1
-)
+if not exist "node_modules\" goto :auto_install
+goto :start_app
 
-if not exist "node_modules\" (
-    echo [ИНФО] Папка node_modules не найдена. Запуск предварительной установки install.bat...
-    call install.bat
-    if %ERRORLEVEL% NEQ 0 (
-        echo [ОШИБКА] Установка не была завершена.
-        pause
-        exit /b %ERRORLEVEL%
-    )
-)
+:auto_install
+echo [INFO] node_modules folder not found.
+echo Running install.bat first...
+echo.
+call install.bat
+if errorlevel 1 goto :install_failed
 
-echo [ИНФО] Запуск локального узла Easy Transcriber...
-echo [ИНФО] Приложение откроется по адресу: http://localhost:3000
-echo [ИНФО] Чтобы остановить сервер, нажмите Ctrl+C в этом окне.
+:start_app
+echo [INFO] Starting local development server...
+echo [INFO] The application will open at: http://localhost:3000
+echo [INFO] Press Ctrl+C in this window at any time to stop the server.
 echo.
 
-:: Open default browser after launching dev server
 start "" "http://localhost:3000"
-
-:: Start Vite development server
 call npm run dev
+if errorlevel 1 goto :dev_error
+exit /b 0
 
-if %ERRORLEVEL% NEQ 0 (
-    echo.
-    echo [ИНФО] Сервер остановлен с кодом %ERRORLEVEL%.
-)
-
+:no_node
+echo.
+echo ===================================================
+echo [ERROR] Node.js is not installed or not in PATH!
+echo ===================================================
+echo Please install Node.js from https://nodejs.org/ first.
+echo.
 pause
+exit /b 1
 
+:install_failed
+echo.
+echo ===================================================
+echo [ERROR] Dependencies installation was not completed.
+echo ===================================================
+echo Please run install.bat and check for errors.
+echo.
+pause
+exit /b 1
+
+:dev_error
+echo.
+echo ===================================================
+echo [INFO] Server stopped.
+echo ===================================================
+echo.
+pause
+exit /b 1
