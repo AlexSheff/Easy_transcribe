@@ -1,18 +1,21 @@
 import { ProcessedFile, SpeakerMetadata } from '../types';
 
 export function formatTimeSeconds(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
+  const safeSec = Math.max(0, isFinite(seconds) ? Math.floor(seconds) : 0);
+  const m = Math.floor(safeSec / 60);
+  const s = safeSec % 60;
   const h = Math.floor(m / 60);
   const remM = m % 60;
   return `${h.toString().padStart(2, '0')}:${remM.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
 export function formatSrtTime(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  const ms = Math.floor((seconds % 1) * 1000);
+  const safeSec = Math.max(0, isFinite(seconds) ? seconds : 0);
+  const totalSecInt = Math.floor(safeSec);
+  const h = Math.floor(totalSecInt / 3600);
+  const m = Math.floor((totalSecInt % 3600) / 60);
+  const s = totalSecInt % 60;
+  const ms = Math.min(999, Math.floor((safeSec - totalSecInt) * 1000));
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
 }
 
@@ -108,7 +111,7 @@ export function generatePlainTextExport(file: ProcessedFile, speakers: Record<st
     .join('\n\n');
 }
 
-export function downloadTextFile(content: string, filename: string, mimeType = 'text/plain') {
+export function downloadTextFile(content: string, filename: string, mimeType = 'text/plain;charset=utf-8') {
   const blob = new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -117,5 +120,5 @@ export function downloadTextFile(content: string, filename: string, mimeType = '
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

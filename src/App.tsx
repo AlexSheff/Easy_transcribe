@@ -53,6 +53,15 @@ export const App: React.FC = () => {
   
   // Pipeline Engine Instance
   const engineRef = useRef<OfflineTranscriptionEngine>(new OfflineTranscriptionEngine());
+  const activeAudioUrlRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (activeAudioUrlRef.current) {
+        URL.revokeObjectURL(activeAudioUrlRef.current);
+      }
+    };
+  }, []);
 
   const addLog = (type: 'SYSTEM' | 'PROC' | 'DONE' | 'ERROR' | 'INFO', message: string) => {
     const entry: LogEntry = {
@@ -113,6 +122,11 @@ export const App: React.FC = () => {
         }
       );
 
+      if (activeAudioUrlRef.current) {
+        URL.revokeObjectURL(activeAudioUrlRef.current);
+      }
+      activeAudioUrlRef.current = result.audioUrl || null;
+
       setActiveFile(result);
       setSpeakers(result.speakers);
       setProcessedCount((prev) => prev + 1);
@@ -153,22 +167,26 @@ export const App: React.FC = () => {
   // Update Speaker Metadata
   const handleUpdateSpeaker = (id: string, updates: Partial<SpeakerMetadata>) => {
     engineRef.current.updateSpeaker(id, updates);
-    setSpeakers(engineRef.current.getSpeakers());
+    const spks = engineRef.current.getSpeakers();
+    setSpeakers(spks);
+    setActiveFile((prev) => (prev ? { ...prev, speakers: spks } : null));
     addLog('INFO', `Updated speaker identity ${id} -> ${updates.name || ''}`);
   };
 
   // Merge Speakers
   const handleMergeSpeakers = (sourceId: string, targetId: string) => {
     engineRef.current.mergeSpeakers(sourceId, targetId);
+    const spks = engineRef.current.getSpeakers();
+    setSpeakers(spks);
     
-    // Update current active file segments
-    if (activeFile) {
-      const updatedSegments = activeFile.segments.map((seg) =>
+    // Update current active file segments & speakers
+    setActiveFile((prev) => {
+      if (!prev) return null;
+      const updatedSegments = prev.segments.map((seg) =>
         seg.speakerId === sourceId ? { ...seg, speakerId: targetId } : seg
       );
-      setActiveFile({ ...activeFile, segments: updatedSegments });
-    }
-    setSpeakers(engineRef.current.getSpeakers());
+      return { ...prev, segments: updatedSegments, speakers: spks };
+    });
     addLog('INFO', `Merged speaker identity ${sourceId} into ${targetId}`);
   };
 
@@ -176,6 +194,7 @@ export const App: React.FC = () => {
   const handleResetDb = () => {
     engineRef.current.resetVoiceDb();
     setSpeakers({});
+    setActiveFile((prev) => (prev ? { ...prev, speakers: {} } : null));
     addLog('SYSTEM', 'Voice database reset. Session voiceprints cleared.');
   };
 

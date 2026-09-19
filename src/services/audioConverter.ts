@@ -14,49 +14,46 @@ export async function convertMediaToWav(
   const arrayBuffer = await file.arrayBuffer();
 
   onProgress?.(30, 'Decoding multi-format audio track...');
-  const offlineCtx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+  const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+  const offlineCtx = new AudioContextClass();
   
   let audioBuffer: AudioBuffer;
   try {
     audioBuffer = await offlineCtx.decodeAudioData(arrayBuffer.slice(0));
-  } catch (err) {
+  } catch {
     await offlineCtx.close();
     throw new Error(`Failed to decode audio from ${file.name}. Ensure it contains a valid audio stream.`);
   }
 
-  onProgress?.(60, 'Resampling to 16kHz Mono PCM...');
-  const duration = audioBuffer.duration;
-  const numChannels = 1; // Downmix to Mono as required by Whisper & Diarization
-  const totalSamples = Math.floor(duration * targetSampleRate);
+  try {
+    onProgress?.(60, 'Resampling to 16kHz Mono PCM...');
+    const duration = audioBuffer.duration;
+    const numChannels = 1; // Downmix to Mono as required by Whisper & Diarization
+    const totalSamples = Math.max(1, Math.floor(duration * targetSampleRate));
 
-  // Render via OfflineAudioContext for high quality resampled mono
-  const resampleCtx = new OfflineAudioContext(numChannels, totalSamples, targetSampleRate);
-  const source = resampleCtx.createBufferSource();
-  source.buffer = audioBuffer;
+    // Render via OfflineAudioContext for high quality resampled mono
+    const resampleCtx = new OfflineAudioContext(numChannels, totalSamples, targetSampleRate);
+    const source = resampleCtx.createBufferSource();
+    source.buffer = audioBuffer;
 
-  // Channel merger for downmixing multi-channel to mono
-  if (audioBuffer.numberOfChannels > 1) {
-    const merger = resampleCtx.createChannelMerger(1);
-    source.connect(merger);
-    merger.connect(resampleCtx.destination);
-  } else {
+    // Web Audio automatically downmixes multi-channel audio to mono destination (0.5*L + 0.5*R)
     source.connect(resampleCtx.destination);
+    source.start(0);
+    const renderedBuffer = await resampleCtx.startRendering();
+
+    onProgress?.(85, 'Encoding 16-bit PCM WAV container...');
+    const wavBlob = encodeWAV(renderedBuffer, targetSampleRate);
+    
+    onProgress?.(100, 'Conversion complete');
+
+    return {
+      blob: wavBlob,
+      duration,
+      buffer: renderedBuffer
+    };
+  } finally {
+    await offlineCtx.close().catch(() => {});
   }
-
-  source.start(0);
-  const renderedBuffer = await resampleCtx.startRendering();
-
-  onProgress?.(85, 'Encoding 16-bit PCM WAV container...');
-  const wavBlob = encodeWAV(renderedBuffer, targetSampleRate);
-  
-  await offlineCtx.close();
-  onProgress?.(100, 'Conversion complete');
-
-  return {
-    blob: wavBlob,
-    duration,
-    buffer: renderedBuffer
-  };
 }
 
 /**
@@ -94,8 +91,9 @@ function encodeWAV(buffer: AudioBuffer, sampleRate: number): Blob {
   // Write PCM samples (clamp float -1..1 to int16 -32768..32767)
   let offset = 44;
   for (let i = 0; i < channelData.length; i++) {
-    let s = Math.max(-1, Math.min(1, channelData[i]));
-    let sample = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    const raw = channelData[i];
+    const s = Number.isFinite(raw) ? Math.max(-1, Math.min(1, raw)) : 0;
+    const sample = s < 0 ? s * 0x8000 : s * 0x7FFF;
     view.setInt16(offset, sample, true);
     offset += 2;
   }

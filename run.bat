@@ -1,11 +1,22 @@
 @echo off
-setlocal
+setlocal EnableDelayedExpansion
 title Easy Transcriber - Neuromicon Node
+
+:: Ensure execution from the directory where this script is located
+cd /d "%~dp0"
 
 echo ===================================================
 echo   NEUROMICON // EASY TRANSCRIBER - LAUNCHER
 echo ===================================================
 echo.
+
+:: Add default Node.js Windows installation paths to current session PATH if not already present
+if exist "%ProgramFiles%\nodejs\node.exe" (
+    set "PATH=%ProgramFiles%\nodejs;%PATH%"
+)
+if exist "%LocalAppData%\Programs\node\nodejs\node.exe" (
+    set "PATH=%LocalAppData%\Programs\node\nodejs;%PATH%"
+)
 
 where node >nul 2>&1
 if %ERRORLEVEL% NEQ 0 (

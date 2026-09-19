@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { ConversionItem } from '../types';
 import { convertMediaToWav } from '../services/audioConverter';
 import { X, RefreshCw, Upload, Download, CheckCircle, AlertCircle, ArrowRight } from 'lucide-react';
@@ -18,8 +18,33 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
 }) => {
   const [items, setItems] = useState<ConversionItem[]>([]);
   const [isConvertingAll, setIsConvertingAll] = useState(false);
+  const itemsRef = useRef<ConversionItem[]>(items);
+  itemsRef.current = items;
+
+  useEffect(() => {
+    return () => {
+      itemsRef.current.forEach((it: ConversionItem) => {
+        if (it.convertedUrl) URL.revokeObjectURL(it.convertedUrl);
+      });
+    };
+  }, []);
 
   if (!isOpen) return null;
+
+  const handleClearAll = () => {
+    items.forEach((it) => {
+      if (it.convertedUrl) URL.revokeObjectURL(it.convertedUrl);
+    });
+    setItems([]);
+  };
+
+  const handleRemoveItem = (id: string) => {
+    const it = items.find((i) => i.id === id);
+    if (it?.convertedUrl) {
+      URL.revokeObjectURL(it.convertedUrl);
+    }
+    setItems((prev) => prev.filter((i) => i.id !== id));
+  };
 
   const handleFilesAdded = (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -144,7 +169,7 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
               </span>
               <div className="flex items-center space-x-2">
                 <button
-                  onClick={() => setItems([])}
+                  onClick={handleClearAll}
                   disabled={isConvertingAll}
                   className="text-xs text-[#888888] hover:text-white px-2 py-1 cursor-pointer"
                 >
@@ -217,6 +242,15 @@ export const ConverterModal: React.FC<ConverterModalProps> = ({
                       </button>
                     </>
                   )}
+
+                  <button
+                    onClick={() => handleRemoveItem(item.id)}
+                    disabled={item.status === 'converting'}
+                    className="text-[#666666] hover:text-[#ff5555] p-1 rounded transition cursor-pointer disabled:opacity-20"
+                    title="Remove from queue"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
             ))}

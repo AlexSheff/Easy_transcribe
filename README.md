@@ -11,20 +11,22 @@
 - 🔒 **100% Offline & Private** — Client-side DSP and Web Audio processing. No cloud uploads, no subscriptions, no tracking.
 - 🎙️ **Real-time Microphone Recording** — Live mic capture with real-time Voice Activity Detection (VAD) and animated audio frequency spectrum visualizer.
 - 🎬 **Universal Media to WAV Converter** — Built-in offline audio pipeline: drops in video/audio containers (MP4, MKV, AVI, MOV, WEBM, MP3, M4A, FLAC) and resamples/downmixes directly to standardized 16kHz Mono 16-bit PCM WAV.
-- 🗣️ **Speaker Diarization** — Utterance-chunked agglomerative clustering for accurate conversational turn-taking detection.
-- ⚧ **Gender Detection via F0 Pitch Analysis** — Offline pitch estimation via autocorrelation with fundamental frequency analysis (F0 threshold at 165Hz) to distinguish Male and Female voices without requiring external models or internet access.
+- 🌐 **Bilingual (Russian & English) Support** — Automatic detection of language and file naming conventions with localized speaker labeling and cluster summaries.
+- 🗣️ **Speaker Diarization & Voice Matching** — Utterance-chunked agglomerative clustering with dynamic fundamental frequency ($F_0$) pitch tracking for conversational turn-taking detection.
+- ⚧ **Gender Detection via F0 Pitch Analysis** — Offline pitch estimation via autocorrelation with fundamental frequency analysis ($F_0$ threshold at 165Hz) to distinguish Male and Female voices without requiring external models or internet access.
 - 🧬 **Per-Session Speaker Database** — Manages identified speaker profiles, turn counts, and average pitch. Allows renaming speakers and merging split identities in one click. Automatically cleared per session for clean identification.
 - 🧠 **Semantic Clustering** — Groups conversational turns into high-level thematic topic clusters with auto-summaries.
-- 📝 **Structured Intelligence Export** — One-click export to Markdown (`.md`), Subtitles (`.srt`), structured JSON (`.json`), or clean Plain Text (`.txt`).
+- 📝 **Structured Intelligence Export** — One-click export to Markdown (`.md`), Subtitles (`.srt`), structured JSON (`.json`), or clean Plain Text (`.txt`) with UTF-8 encoding.
 - ⚡ **Interactive Scrubber Player** — Synchronized playback scrubber with clickable timestamp jumps to replay specific dialogue turns.
 
 ---
 
 ## 🚀 Quick Start (Windows)
 
-1. **Prerequisites:** Install [Node.js (v18 or newer)](https://nodejs.org/).
+1. **Prerequisites:** Install [Node.js (v18, v20 or newer LTS)](https://nodejs.org/). Make sure the option **"Add to PATH"** is checked during installation.
 2. **Install Dependencies:**
    - Double-click **`install.bat`** (or run `npm install` in your terminal).
+   - *If run as Administrator or from another folder, `install.bat` automatically switches to the project root and detects standard Node.js installation paths.*
 3. **Launch Application:**
    - Double-click **`run.bat`** (or run `npm run dev`).
    - The launcher will automatically open your default browser at `http://localhost:3000`.
@@ -49,6 +51,19 @@ Once running, navigate to `http://localhost:3000` in any modern web browser (Chr
 
 ---
 
+## 🛠️ Troubleshooting & Tips
+
+- **`install.bat` says Node.js is not found**:
+  - Verify that Node.js is installed from [nodejs.org](https://nodejs.org/).
+  - Restart your command prompt or terminal after installing Node.js so that the system environment variables update.
+  - The script now automatically inspects `%ProgramFiles%\nodejs` and `%LocalAppData%\Programs\node\nodejs`.
+- **Browser Audio Permissions**:
+  - When using the real-time recording feature, grant microphone permissions to the browser.
+- **Large Files**:
+  - Processing happens completely locally within the browser Web Audio sandbox. For multi-hour files, 16kHz WAV conversion ensures minimal memory overhead.
+
+---
+
 ## 📂 Project Structure
 
 ```
@@ -69,9 +84,9 @@ Easy_transcribe/
 │   │   └── ExportModal.tsx       # Multi-format structured export (MD, SRT, JSON, TXT)
 │   ├── services/
 │   │   ├── audioConverter.ts     # In-browser Web Audio API decoding and WAV encoder
-│   │   ├── diarization.ts        # Pitch F0 analysis & agglomerative speaker clustering
+│   │   ├── pitchAnalyzer.ts      # Autocorrelation F0 pitch analysis & gender detection
 │   │   ├── exporter.ts           # Markdown, SRT, and JSON format generators
-│   │   └── transcriptionEngine.ts # Offline pipeline orchestrator & demo audio synthesis
+│   │   └── transcriptionEngine.ts # Offline pipeline orchestrator & speech intervals
 │   ├── types.ts                  # Shared TypeScript interfaces & types
 │   ├── App.tsx                   # Main application layout and state management
 │   ├── main.tsx                  # React entry point
