@@ -11,7 +11,7 @@ import { RecorderModal } from './components/RecorderModal';
 import { SpeakerManagerModal } from './components/SpeakerManagerModal';
 import { SemanticViewModal } from './components/SemanticViewModal';
 import { ExportModal } from './components/ExportModal';
-import { Upload, Sparkles, SlidersHorizontal, Eye, AlertTriangle, X } from 'lucide-react';
+import { Upload, Sparkles, SlidersHorizontal, Eye, AlertTriangle, X, FileText } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [model, setModel] = useState<WhisperModelSize>('base');
@@ -21,6 +21,7 @@ export const App: React.FC = () => {
   const [queueCount, setQueueCount] = useState<number>(0);
   const [processedCount, setProcessedCount] = useState<number>(0);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
   
   const [logs, setLogs] = useState<LogEntry[]>([
     {
@@ -38,6 +39,7 @@ export const App: React.FC = () => {
   ]);
 
   const [activeFile, setActiveFile] = useState<ProcessedFile | null>(null);
+  const [processedFiles, setProcessedFiles] = useState<ProcessedFile[]>([]);
   const [speakers, setSpeakers] = useState<Record<string, SpeakerMetadata>>({});
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<'console' | 'transcript'>('console');
@@ -94,77 +96,87 @@ export const App: React.FC = () => {
     addLog('DONE', `Whisper Engine [${newModel.toUpperCase()}] ready.`);
   };
 
-  // Process a media file through the pipeline
-  const processFile = async (file: File) => {
+  // Process multiple media files through the pipeline sequentially
+  const enqueueAndProcessFiles = async (files: File[]) => {
+    if (!files || files.length === 0 || isProcessing) return;
     setErrorBanner(null);
     setIsProcessing(true);
     setShowProgress(true);
-    setProgress(5);
-    setStatus(`[1/1] Processing: ${file.name}...`);
-    addLog('SYSTEM', `Queue initialized: 1 files. Target: ${file.name}`);
-    addLog('PROC', `[1/1] Processing: ${file.name}...`);
 
-    try {
-      const result = await engineRef.current.processMediaFile(
-        file,
-        {
-          modelSize: model,
-          diarizationEnabled: true,
-          voiceFingerprintEnabled: true,
-          semanticClusteringEnabled: true,
-          language: 'auto',
-          fingerprintThreshold: 0.65,
-        },
-        (prog, stage) => {
-          setProgress(prog);
-          setStatus(stage);
-          if (prog === 35 || prog === 60 || prog === 70 || prog === 88) {
-            addLog('PROC', stage);
+    const total = files.length;
+    setQueueCount(total);
+    addLog('SYSTEM', `Очередь инициализирована: ${total} файл(ов) поступило на обработку.`);
+
+    for (let i = 0; i < total; i++) {
+      const file = files[i];
+      const currentIdx = i + 1;
+      setProgress(5);
+      setStatus(`[${currentIdx}/${total}] Обработка: ${file.name}...`);
+      addLog('PROC', `[${currentIdx}/${total}] Старт обработки: ${file.name}...`);
+
+      try {
+        const result = await engineRef.current.processMediaFile(
+          file,
+          {
+            modelSize: model,
+            diarizationEnabled: true,
+            voiceFingerprintEnabled: true,
+            semanticClusteringEnabled: true,
+            language: 'auto',
+            fingerprintThreshold: 0.65,
+          },
+          (prog, stage) => {
+            setProgress(prog);
+            setStatus(`[${currentIdx}/${total}] ${stage}`);
+            if (prog === 35 || prog === 60 || prog === 75 || prog === 88) {
+              addLog('PROC', `[${currentIdx}/${total}] ${stage}`);
+            }
           }
+        );
+
+        if (activeAudioUrlRef.current && activeFile?.filename === file.name) {
+          URL.revokeObjectURL(activeAudioUrlRef.current);
         }
-      );
+        activeAudioUrlRef.current = result.audioUrl || null;
 
-      if (activeAudioUrlRef.current) {
-        URL.revokeObjectURL(activeAudioUrlRef.current);
+        setProcessedFiles((prev) => {
+          const others = prev.filter((p) => p.filename !== file.name);
+          return [...others, result];
+        });
+        setActiveFile(result);
+        setSpeakers(result.speakers);
+        setProcessedCount((prev) => prev + 1);
+        setQueueCount(Math.max(0, total - currentIdx));
+
+        const outName = `transcript_${file.name.replace(/\.[^/.]+$/, '')}.md`;
+        addLog('DONE', `Завершено [${currentIdx}/${total}]: ${file.name} -> ${outName}`);
+        addLog('DONE', `Диаризация: распознано ${Object.keys(result.speakers).length} спикеров.`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        addLog('ERROR', `Ошибка в ${file.name}:\n${msg}`);
+        setErrorBanner(`Ошибка в ${file.name}:\n${msg}`);
       }
-      activeAudioUrlRef.current = result.audioUrl || null;
-
-      setActiveFile(result);
-      setSpeakers(result.speakers);
-      setProcessedCount((prev) => prev + 1);
-      setQueueCount(0);
-      setStatus('Batch Processing Finished');
-      setShowProgress(false);
-      setActiveTab('transcript');
-
-      const outName = `transcript_${file.name.replace(/\.[^/.]+$/, '')}.md`;
-      addLog('DONE', `Finished: ${file.name} -> ${outName}`);
-      addLog('DONE', `Identified ${Object.keys(result.speakers).length} distinct speaker voiceprints.`);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      addLog('ERROR', `Error in ${file.name}:\n${msg}`);
-      setErrorBanner(msg);
-      setStatus('Operational Error');
-      setShowProgress(false);
-    } finally {
-      setIsProcessing(false);
     }
+
+    setStatus('Все файлы в очереди обработаны');
+    setShowProgress(false);
+    setIsProcessing(false);
+    setActiveTab('transcript');
   };
 
   // Handle file input selection
   const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-    setQueueCount(files.length);
-    processFile(files[0]);
+    const fileList = Array.from(files);
+    enqueueAndProcessFiles(fileList);
     e.target.value = '';
   };
 
   // Load Demo Audio
   const handleLoadDemo = () => {
     const demoFile = engineRef.current.createDemoAudioFile();
-    setQueueCount(1);
-    processFile(demoFile);
+    enqueueAndProcessFiles([demoFile]);
   };
 
   // Update Speaker Metadata
@@ -173,6 +185,9 @@ export const App: React.FC = () => {
     const spks = engineRef.current.getSpeakers();
     setSpeakers(spks);
     setActiveFile((prev) => (prev ? { ...prev, speakers: spks } : null));
+    setProcessedFiles((prev) =>
+      prev.map((f) => (f.id === activeFile?.id ? { ...f, speakers: spks } : f))
+    );
     addLog('INFO', `Updated speaker identity ${id} -> ${updates.name || ''}`);
   };
 
@@ -190,6 +205,15 @@ export const App: React.FC = () => {
       );
       return { ...prev, segments: updatedSegments, speakers: spks };
     });
+    setProcessedFiles((prev) =>
+      prev.map((f) => {
+        if (f.id !== activeFile?.id) return f;
+        const updatedSegments = f.segments.map((seg) =>
+          seg.speakerId === sourceId ? { ...seg, speakerId: targetId } : seg
+        );
+        return { ...f, segments: updatedSegments, speakers: spks };
+      })
+    );
     addLog('INFO', `Merged speaker identity ${sourceId} into ${targetId}`);
   };
 
@@ -206,17 +230,55 @@ export const App: React.FC = () => {
     if (!activeFile) return;
     const updated = activeFile.segments.map((s) => (s.id === segId ? { ...s, text: newText } : s));
     setActiveFile({ ...activeFile, segments: updated });
+    setProcessedFiles((prev) =>
+      prev.map((f) => (f.id === activeFile.id ? { ...f, segments: updated } : f))
+    );
     addLog('INFO', `Edited segment ${segId}.`);
   };
 
   return (
-    <div className="flex h-screen bg-[#0b0b0b] text-[#e0e0e0] overflow-hidden select-none">
-      {/* Hidden File Input for IMPORT MEDIA */}
+    <div 
+      className="flex h-screen bg-[#0b0b0b] text-[#e0e0e0] overflow-hidden select-none relative"
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!isDragOver) setIsDragOver(true);
+      }}
+      onDragLeave={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+        setIsDragOver(false);
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        setIsDragOver(false);
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+          enqueueAndProcessFiles(Array.from(e.dataTransfer.files));
+        }
+      }}
+    >
+      {/* Drag & Drop Visual Overlay */}
+      {isDragOver && (
+        <div className="fixed inset-0 bg-[#00ffcc]/10 border-4 border-dashed border-[#00ffcc] backdrop-blur-xs z-50 flex flex-col items-center justify-center pointer-events-none">
+          <Upload className="w-16 h-16 text-[#00ffcc] animate-bounce mb-3" />
+          <div className="text-xl font-mono font-bold text-white tracking-widest uppercase">
+            Перетащите файлы сюда для транскрибации
+          </div>
+          <div className="text-sm text-[#00ffcc] font-mono mt-1">
+            Поддерживается одновременная загрузка нескольких файлов (MP4, MKV, MP3, WAV, FLAC...)
+          </div>
+        </div>
+      )}
+
+      {/* Hidden File Input for IMPORT MEDIA - with multiple attribute */}
       <input
         type="file"
         ref={fileInputRef}
         onChange={handleFilesSelected}
         accept="video/*,audio/*,.mp4,.mkv,.avi,.mp3,.wav,.m4a,.webm,.flac"
+        multiple
         className="hidden"
       />
 
@@ -321,9 +383,9 @@ export const App: React.FC = () => {
                 className="border-2 border-dashed border-[#222222] hover:border-[#00ffcc]/40 rounded-xl p-8 flex flex-col items-center justify-center text-center cursor-pointer transition bg-[#111111]/30 group"
               >
                 <Upload className="w-8 h-8 text-[#555555] group-hover:text-[#00ffcc] transition mb-2" />
-                <span className="text-sm font-bold text-white">Click to Import Audio/Video Media</span>
+                <span className="text-sm font-bold text-white">Click or Drop Media Files Here to Transcribe</span>
                 <span className="text-xs text-[#666666] mt-1">
-                  Supports MP4, MKV, AVI, MOV, MP3, WAV, FLAC (Auto-converts and diarizes offline)
+                  Supports multiple files simultaneously (MP4, MKV, AVI, MOV, MP3, WAV, FLAC)
                 </span>
                 <div className="mt-4 flex items-center space-x-2">
                   <span className="text-[11px] text-[#555555]">Or test right now with:</span>
@@ -343,14 +405,54 @@ export const App: React.FC = () => {
           </div>
         ) : (
           activeFile && (
-            <TranscriptView
-              file={activeFile}
-              speakers={speakers}
-              onOpenSpeakers={() => setIsSpeakersOpen(true)}
-              onOpenSemantic={() => setIsSemanticOpen(true)}
-              onOpenExport={() => setIsExportOpen(true)}
-              onUpdateSegmentText={handleUpdateSegmentText}
-            />
+            <div className="space-y-3">
+              {/* Multi-File Switcher Bar */}
+              {processedFiles.length > 1 && (
+                <div className="bg-[#111111] border border-[#222222] rounded-xl p-3 flex items-center space-x-3 overflow-x-auto scrollbar-thin">
+                  <div className="flex items-center space-x-1.5 text-xs font-mono font-bold text-[#00ffcc] uppercase tracking-wider shrink-0">
+                    <FileText className="w-3.5 h-3.5" />
+                    <span>Файлы ({processedFiles.length}):</span>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    {processedFiles.map((pf) => {
+                      const isSelected = activeFile.id === pf.id;
+                      return (
+                        <button
+                          key={pf.id}
+                          onClick={() => {
+                            if (activeAudioUrlRef.current && activeAudioUrlRef.current !== pf.audioUrl) {
+                              URL.revokeObjectURL(activeAudioUrlRef.current);
+                            }
+                            activeAudioUrlRef.current = pf.audioUrl || null;
+                            setActiveFile(pf);
+                            setSpeakers(pf.speakers);
+                          }}
+                          className={`text-xs font-mono px-3 py-1.5 rounded-lg border transition shrink-0 cursor-pointer flex items-center space-x-2 ${
+                            isSelected
+                              ? 'bg-[#00ffcc]/15 text-[#00ffcc] border-[#00ffcc]/60 shadow-[0_0_10px_rgba(0,255,204,0.15)] font-bold'
+                              : 'bg-[#181818] text-[#999999] border-[#2a2a2a] hover:border-[#444444] hover:text-white'
+                          }`}
+                        >
+                          <span className="truncate max-w-[200px]">{pf.filename}</span>
+                          <span className="text-[10px] bg-[#222222] text-[#cccccc] px-1.5 py-0.5 rounded-full">
+                            {pf.segments.length} seg
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              <TranscriptView
+                file={activeFile}
+                speakers={speakers}
+                onOpenSpeakers={() => setIsSpeakersOpen(true)}
+                onOpenSemantic={() => setIsSemanticOpen(true)}
+                onOpenExport={() => setIsExportOpen(true)}
+                onUpdateSegmentText={handleUpdateSegmentText}
+              />
+            </div>
           )
         )}
       </main>
@@ -360,8 +462,7 @@ export const App: React.FC = () => {
         isOpen={isConverterOpen}
         onClose={() => setIsConverterOpen(false)}
         onSendToTranscriber={(file) => {
-          setQueueCount(1);
-          processFile(file);
+          enqueueAndProcessFiles([file]);
         }}
         onLog={addLog}
       />
@@ -370,8 +471,7 @@ export const App: React.FC = () => {
         isOpen={isRecorderOpen}
         onClose={() => setIsRecorderOpen(false)}
         onRecordingComplete={(file) => {
-          setQueueCount(1);
-          processFile(file);
+          enqueueAndProcessFiles([file]);
         }}
         onLog={addLog}
       />
@@ -400,6 +500,7 @@ export const App: React.FC = () => {
             onClose={() => setIsExportOpen(false)}
             file={activeFile}
             speakers={speakers}
+            allFiles={processedFiles}
           />
         </>
       )}

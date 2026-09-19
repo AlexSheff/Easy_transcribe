@@ -14,6 +14,7 @@ interface ExportModalProps {
   onClose: () => void;
   file: ProcessedFile;
   speakers: Record<string, SpeakerMetadata>;
+  allFiles?: ProcessedFile[];
 }
 
 type ExportFormat = 'md' | 'srt' | 'json' | 'txt';
@@ -23,6 +24,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   onClose,
   file,
   speakers,
+  allFiles = [],
 }) => {
   const [format, setFormat] = useState<ExportFormat>('md');
   const [copied, setCopied] = useState(false);
@@ -66,6 +68,17 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 
   const handleDownload = () => {
     downloadTextFile(content, filename, mimeType);
+  };
+
+  const handleDownloadAllMd = () => {
+    if (!allFiles || allFiles.length === 0) return;
+    allFiles.forEach((f, idx) => {
+      setTimeout(() => {
+        const md = generateMarkdownExport(f, f.speakers || speakers);
+        const bName = f.filename.replace(/\.[^/.]+$/, '');
+        downloadTextFile(md, `transcript_${bName}.md`, 'text/markdown');
+      }, idx * 250);
+    });
   };
 
   return (
@@ -133,6 +146,17 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           </div>
 
           <div className="flex items-center space-x-2">
+            {allFiles && allFiles.length > 1 && (
+              <button
+                onClick={handleDownloadAllMd}
+                className="bg-[#1e1e1e] hover:bg-[#282828] border border-[#333333] text-[#00ffcc] px-3 py-1.5 rounded-lg text-xs font-mono flex items-center space-x-1.5 transition cursor-pointer"
+                title="Download all transcribed files as .md"
+              >
+                <Download className="w-3.5 h-3.5 text-[#00ffcc]" />
+                <span>Export All ({allFiles.length} .MD)</span>
+              </button>
+            )}
+
             <button
               onClick={handleCopy}
               className="bg-[#222222] hover:bg-[#333333] text-white px-3 py-1.5 rounded-lg text-xs font-mono flex items-center space-x-1.5 transition cursor-pointer"

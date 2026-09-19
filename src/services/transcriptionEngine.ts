@@ -1,6 +1,11 @@
 import { ProcessedFile, TranscriptSegment, SpeakerMetadata, SemanticCluster, WhisperModelSize } from '../types';
 import { convertMediaToWav } from './audioConverter';
 import { estimateSegmentPitch } from './pitchAnalyzer';
+import { pipeline, env } from '@xenova/transformers';
+
+// Configure transformers.js for browser client
+env.allowLocalModels = false;
+env.allowRemoteModels = true;
 
 const SPEAKER_COLORS = [
   '#00ffcc', // Cyan
@@ -57,6 +62,45 @@ export class OfflineTranscriptionEngine {
     this.voiceDb.delete(sourceId);
   }
 
+  private transcriberInstance: any = null;
+  private currentModelName: string = '';
+
+  private async getWhisperPipeline(
+    modelSize: WhisperModelSize,
+    onProgress: (progress: number, stage: string) => void
+  ) {
+    // Select model: Xenova/whisper-tiny (~39MB) for tiny, Xenova/whisper-base (~75MB) for base/others
+    let modelId = 'Xenova/whisper-tiny';
+    if (modelSize === 'base') modelId = 'Xenova/whisper-base';
+    else if (modelSize === 'small') modelId = 'Xenova/whisper-small';
+    else if (modelSize === 'medium' || modelSize === 'large-v3') modelId = 'Xenova/whisper-base';
+
+    if (!this.transcriberInstance || this.currentModelName !== modelId) {
+      onProgress(35, `Подключение нейросети Whisper [${modelId}]...`);
+      try {
+        this.transcriberInstance = await pipeline('automatic-speech-recognition', modelId, {
+          progress_callback: (item: any) => {
+            if (item.status === 'progress' && item.progress !== undefined) {
+              const pct = Math.min(99, Math.round(item.progress));
+              onProgress(35 + Math.floor(pct * 0.25), `Загрузка весов Whisper (${item.file || ''}): ${pct}%`);
+            } else if (item.status === 'ready') {
+              onProgress(60, `Модель Whisper загружена в WebAssembly.`);
+            }
+          }
+        });
+        this.currentModelName = modelId;
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Не удалось инициализировать нейросеть Whisper (${msg}).\n` +
+          `• Для первой загрузки весов модели (~39 МБ) требуется доступ в интернет.\n` +
+          `• После первой загрузки веса кэшируются браузером и работают полностью оффлайн.`
+        );
+      }
+    }
+    return this.transcriberInstance;
+  }
+
   /**
    * Main pipeline orchestration matching transcription_pipeline.py
    */
@@ -65,24 +109,18 @@ export class OfflineTranscriptionEngine {
     options: PipelineOptions,
     onProgress: (progress: number, stage: string) => void
   ): Promise<ProcessedFile> {
-    onProgress(5, `Extracting and normalizing audio stream (16kHz Mono)...`);
+    onProgress(5, `Извлечение и нормализация аудиодорожки (16kHz Mono)...`);
     const { blob, duration, buffer } = await convertMediaToWav(file, 16000, (p, msg) => {
       onProgress(Math.floor(p * 0.3), msg);
     });
 
-    onProgress(35, `Running Whisper [${options.modelSize.toUpperCase()}] multilingual ASR...`);
-    await new Promise((r) => setTimeout(r, 600)); // Simulated realistic neural inference
-
-    // Detect actual speech intervals from audio waveform energy
-    const detectedIntervals = this.detectAudioSpeechIntervals(buffer, duration);
-
-    // Generate speech segments aligned to detected intervals
+    onProgress(35, `Запуск Whisper [${options.modelSize.toUpperCase()}] для распознавания речи...`);
     const isRussian = /[а-яА-ЯёЁ]/.test(file.name) || options.language === 'ru';
-    const rawSegments = await this.performSpeechRecognition(file.name, duration, detectedIntervals, isRussian);
-    onProgress(60, `Extracted ${rawSegments.length} utterance segments.`);
+    const rawSegments = await this.performSpeechRecognition(file, buffer, duration, options, onProgress);
+    onProgress(70, `Распознано ${rawSegments.length} речевых сегментов.`);
 
     // Diarization & Gender Detection via pitch F0 analysis and voice clustering
-    onProgress(70, `Utterance-chunked agglomerative clustering & F0 pitch analysis...`);
+    onProgress(75, `Диаризация спикеров и анализ основного тона F0...`);
     const finalSegments: TranscriptSegment[] = [];
 
     for (let i = 0; i < rawSegments.length; i++) {
@@ -144,12 +182,11 @@ export class OfflineTranscriptionEngine {
     // Semantic clustering
     let clusters: SemanticCluster[] = [];
     if (options.semanticClusteringEnabled) {
-      onProgress(88, `Running semantic clustering (Sentence embeddings & topic extraction)...`);
-      await new Promise((r) => setTimeout(r, 400));
+      onProgress(88, `Тематическая кластеризация реплик...`);
       clusters = this.generateSemanticClusters(finalSegments, isRussian);
     }
 
-    onProgress(100, `Processing complete: ${finalSegments.length} segments analyzed.`);
+    onProgress(100, `Обработка завершена: сформировано ${finalSegments.length} реплик.`);
 
     const audioUrl = URL.createObjectURL(blob);
 
@@ -238,84 +275,145 @@ export class OfflineTranscriptionEngine {
   }
 
   /**
-   * Generates transcription segments tailored to audio intervals
+   * Performs real neural speech recognition with OpenAI Whisper via Transformers.js
    */
   private async performSpeechRecognition(
-    filename: string,
+    file: File,
+    buffer: AudioBuffer,
     duration: number,
-    intervals: Array<{ start: number; end: number }>,
-    isRussian: boolean
+    options: PipelineOptions,
+    onProgress: (progress: number, stage: string) => void
   ): Promise<TranscriptSegment[]> {
-    const isDemo = filename.includes('dialogue_demo');
-    const isMeeting = filename.toLowerCase().includes('meeting') ||
-      filename.toLowerCase().includes('dialogue') ||
-      filename.toLowerCase().includes('interview') ||
-      duration > 12;
+    const isDemo = file.name.includes('dialogue_demo');
+    if (isDemo) {
+      return [
+        {
+          id: 'seg_1',
+          start: 0.0,
+          end: 3.8,
+          text: 'Демонстрационный звуковой сигнал: мужской голос (основной тон F0 ~130 Гц).',
+          speakerId: 'speaker_001',
+          gender: 'Male',
+          uncertain: false,
+          confidence: 0.98,
+          clusterId: 1,
+          words: []
+        },
+        {
+          id: 'seg_2',
+          start: 4.0,
+          end: 7.8,
+          text: 'Демонстрационный звуковой сигнал: женский голос (основной тон F0 ~220 Гц).',
+          speakerId: 'speaker_002',
+          gender: 'Female',
+          uncertain: false,
+          confidence: 0.98,
+          clusterId: 1,
+          words: []
+        }
+      ];
+    }
 
-    const phrases = isRussian
-      ? (isMeeting
-          ? [
-              { speaker: 'speaker_001', text: 'Добрый день, коллеги. Начинаем сессию транскрибации и проверки акустических моделей.' },
-              { speaker: 'speaker_002', text: 'Все системы работают штатно. Модули диаризации речи и анализа основного тона F0 инициализированы.' },
-              { speaker: 'speaker_001', text: 'Отлично. Проверьте распределение голосов и точность кластеризации спикеров.' },
-              { speaker: 'speaker_002', text: 'Голосовые отпечатки зафиксированы. Порог схожести эмбеддингов установлен на 0.65.' },
-              { speaker: 'speaker_001', text: 'Принято. Переходим к генерации структурированного Markdown и субтитров.' },
-              { speaker: 'speaker_002', text: 'Готово. Текстовые сегменты с временными метками успешно сформированы.' }
-            ]
-          : [
-              { speaker: 'speaker_001', text: `Медиафайл ${filename} успешно обработан.` },
-              { speaker: 'speaker_001', text: 'Автономная транскрибация завершена. Временные метки и дорожки согласованы.' }
-            ])
-      : (isDemo
-          ? [
-              { speaker: 'speaker_001', text: 'Good morning everyone, let us initiate the system diagnostic review for the Transcriber node.' },
-              { speaker: 'speaker_002', text: 'All modules are reporting nominal status. The F0 pitch analyzer and Whisper pipeline are loaded in memory.' }
-            ]
-          : (isMeeting
-              ? [
-                  { speaker: 'speaker_001', text: 'Good morning everyone, let us initiate the system diagnostic review for the Transcriber node.' },
-                  { speaker: 'speaker_002', text: 'All modules are reporting nominal status. The F0 pitch analyzer and Whisper pipeline are loaded in memory.' },
-                  { speaker: 'speaker_001', text: 'Excellent. What is the current status of the speaker diarization and voice fingerprinting database?' },
-                  { speaker: 'speaker_002', text: 'Voice fingerprints are isolated per session. Utterance clustering threshold is locked at 0.65 similarity.' },
-                  { speaker: 'speaker_001', text: 'Understood. We are ready to proceed with real-time ingestion and automatic Markdown generation.' },
-                  { speaker: 'speaker_002', text: 'Confirmed. Generating structured intelligence layers with timestamps and speaker tags now.' }
-                ]
-              : [
-                  { speaker: 'speaker_001', text: `Audio file ${filename} processed successfully.` },
-                  { speaker: 'speaker_001', text: 'Offline transcription node operational. All voice embeddings and timestamps synchronized.' }
-                ]));
+    onProgress(40, `Подготовка аудиопотока 16кГц для нейросети Whisper...`);
+    const transcriber = await this.getWhisperPipeline(options.modelSize, onProgress);
+
+    onProgress(60, `Нейросетевая транскрибация речи по временным отрезкам...`);
+    const channelData = buffer.getChannelData(0);
+
+    const lang = options.language && options.language !== 'auto'
+      ? (options.language === 'ru' ? 'russian' : options.language === 'en' ? 'english' : options.language)
+      : null;
+
+    // Run Whisper inference
+    let result: any;
+    try {
+      result = await transcriber(channelData, {
+        chunk_length_s: 30,
+        stride_length_s: 5,
+        return_timestamps: true,
+        task: 'transcribe',
+        language: lang,
+      });
+    } catch (asrErr: unknown) {
+      const errMessage = asrErr instanceof Error ? asrErr.message : String(asrErr);
+      console.error('Whisper inference error:', asrErr);
+      throw new Error(`Ошибка распознавания речи Whisper: ${errMessage}`);
+    }
 
     const segments: TranscriptSegment[] = [];
-    const count = Math.min(phrases.length, Math.max(intervals.length, 1));
 
-    for (let i = 0; i < count; i++) {
-      const p = phrases[i % phrases.length];
-      const interval = intervals[i] || {
-        start: Number((i * (duration / count)).toFixed(2)),
-        end: Number(((i + 1) * (duration / count) - 0.2).toFixed(2)),
-      };
+    if (result && Array.isArray(result.chunks) && result.chunks.length > 0) {
+      let segIdx = 0;
+      for (const chunk of result.chunks) {
+        const text = (chunk.text || '').trim();
+        if (!text) continue;
 
-      const start = interval.start;
-      const end = interval.end > start ? interval.end : Number((start + 2.0).toFixed(2));
-      const textWords = p.text.split(' ');
-      const wordSpan = Math.max(0.15, (end - start) / Math.max(1, textWords.length));
+        segIdx++;
+        const rawStart = Array.isArray(chunk.timestamp) ? chunk.timestamp[0] : (segIdx - 1) * 3;
+        const rawEnd = Array.isArray(chunk.timestamp) ? (chunk.timestamp[1] ?? (rawStart + 3.0)) : (rawStart + 3.0);
+        const start = Math.max(0, Number(Number(rawStart).toFixed(2)));
+        const end = Math.min(duration, Math.max(start + 0.3, Number(Number(rawEnd).toFixed(2))));
 
+        const words = text.split(/\s+/).map((w: string, i: number, arr: string[]) => {
+          const step = (end - start) / Math.max(1, arr.length);
+          return {
+            word: w,
+            start: Number((start + i * step).toFixed(2)),
+            end: Number((start + (i + 1) * step).toFixed(2)),
+            confidence: 0.95
+          };
+        });
+
+        segments.push({
+          id: `seg_${segIdx}`,
+          start,
+          end,
+          text,
+          speakerId: 'speaker_001',
+          gender: 'Unknown',
+          uncertain: false,
+          confidence: 0.95,
+          clusterId: Math.min(3, Math.floor((segIdx - 1) / 3) + 1),
+          words
+        });
+      }
+    } else if (result && typeof result.text === 'string' && result.text.trim()) {
+      const fullText = result.text.trim();
+      const sentences = fullText.match(/[^.!?\n]+[.!?\n]*/g) || [fullText];
+      const sliceDuration = duration / Math.max(1, sentences.length);
+
+      sentences.forEach((sentence: string, idx: number) => {
+        const cleanText = sentence.trim();
+        if (!cleanText) return;
+        const start = Number((idx * sliceDuration).toFixed(2));
+        const end = Number((Math.min(duration, (idx + 1) * sliceDuration)).toFixed(2));
+        segments.push({
+          id: `seg_${idx + 1}`,
+          start,
+          end,
+          text: cleanText,
+          speakerId: 'speaker_001',
+          gender: 'Unknown',
+          uncertain: false,
+          confidence: 0.92,
+          clusterId: Math.min(3, Math.floor(idx / 3) + 1),
+          words: []
+        });
+      });
+    }
+
+    if (segments.length === 0) {
       segments.push({
-        id: `seg_${i + 1}`,
-        start,
-        end,
-        text: p.text,
-        speakerId: p.speaker,
+        id: 'seg_1',
+        start: 0,
+        end: Math.min(duration, 3.0),
+        text: '[Разборчивая человеческая речь в аудиозаписи не обнаружена (тишина или фоновый шум)]',
+        speakerId: 'speaker_001',
         gender: 'Unknown',
-        uncertain: false,
-        confidence: 0.94,
-        clusterId: i < 2 ? 1 : i < 4 ? 2 : 3,
-        words: textWords.map((w, idx) => ({
-          word: w,
-          start: Number((start + idx * wordSpan).toFixed(2)),
-          end: Number((start + (idx + 1) * wordSpan).toFixed(2)),
-          confidence: 0.95
-        }))
+        uncertain: true,
+        confidence: 0.0,
+        clusterId: 1,
+        words: []
       });
     }
 
@@ -323,7 +421,7 @@ export class OfflineTranscriptionEngine {
   }
 
   /**
-   * Generates semantic topic clusters matching semantic_engine.py
+   * Generates semantic topic clusters dynamically based on actual transcribed content
    */
   private generateSemanticClusters(segments: TranscriptSegment[], isRussian = false): SemanticCluster[] {
     if (segments.length === 0) return [];
@@ -335,50 +433,18 @@ export class OfflineTranscriptionEngine {
       clusterMap[cId].push(seg.id);
     });
 
-    const topicTitlesRu: Record<number, { title: string; summary: string }> = {
-      1: {
-        title: 'Инициализация системы и диагностика',
-        summary: 'Открытие сессии, проверка статуса модулей и калибровка аудиопотока.'
-      },
-      2: {
-        title: 'Акустическая архитектура и диаризация',
-        summary: 'Анализ основного тона F0, разделение дикторов и подгонка голосовых отпечатков.'
-      },
-      3: {
-        title: 'Экспорт и финализация данных',
-        summary: 'Формирование итогового отчета в Markdown и выгрузка субтитров SRT.'
-      }
-    };
-
-    const topicTitlesEn: Record<number, { title: string; summary: string }> = {
-      1: {
-        title: 'System Initialization & Diagnostics',
-        summary: 'Opening session review, system status confirmation, and pipeline validation.'
-      },
-      2: {
-        title: 'Voice Architecture & Diarization',
-        summary: 'Review of F0 pitch detection, speaker clustering parameters, and threshold settings.'
-      },
-      3: {
-        title: 'Export Orchestration & Next Steps',
-        summary: 'Execution of structured Markdown export and session data synchronization.'
-      }
-    };
-
-    const topicTitles = isRussian ? topicTitlesRu : topicTitlesEn;
-
     return Object.entries(clusterMap).map(([cIdStr, segIds]) => {
       const cId = parseInt(cIdStr, 10);
-      const info = topicTitles[cId] || {
-        title: isRussian ? `Тематический кластер #${cId}` : `Topical Cluster #${cId}`,
-        summary: isRussian 
-          ? `Семантический блок диалога, включающий ${segIds.length} реплик(и).` 
-          : `Clustered semantic dialogue segment with ${segIds.length} turn(s).`,
-      };
+      const clusterSegs = segments.filter((s) => segIds.includes(s.id));
+      const firstText = clusterSegs[0]?.text || '';
+      const previewTitle = firstText.length > 35 ? firstText.substring(0, 32) + '...' : firstText;
+      const combinedText = clusterSegs.map((s) => s.text).join(' ');
+      const summary = combinedText.length > 110 ? combinedText.substring(0, 107) + '...' : combinedText;
+
       return {
         clusterId: cId,
-        topic: info.title,
-        summary: info.summary,
+        topic: previewTitle || (isRussian ? `Тематический блок #${cId}` : `Topical Block #${cId}`),
+        summary: summary || (isRussian ? `${segIds.length} реплик(и)` : `${segIds.length} turns`),
         segmentIds: segIds
       };
     });

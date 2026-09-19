@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ProcessedFile, SpeakerMetadata, TranscriptSegment } from '../types';
-import { formatTimeSeconds } from '../services/exporter';
+import { formatTimeSeconds, generateMarkdownExport } from '../services/exporter';
 import { 
   Play, 
   Pause, 
@@ -13,7 +13,8 @@ import {
   Download, 
   Layers, 
   Check, 
-  Edit3
+  Edit3,
+  FileText
 } from 'lucide-react';
 
 interface TranscriptViewProps {
@@ -113,6 +114,20 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
     return seg.text.toLowerCase().includes(q) || spk.includes(q);
   });
 
+  const handleDirectDownloadMd = () => {
+    const mdContent = generateMarkdownExport(file, speakers);
+    const blob = new Blob([mdContent], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const baseName = file.filename.replace(/\.[^/.]+$/, '');
+    a.href = url;
+    a.download = `transcript_${baseName}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="bg-[#141414] border border-[#222222] rounded-xl flex flex-col h-[520px] overflow-hidden">
       {/* Hidden audio element */}
@@ -136,6 +151,15 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
         {/* Action Buttons */}
         <div className="flex items-center space-x-2">
           <button
+            onClick={handleDirectDownloadMd}
+            className="bg-[#1c1c1c] hover:bg-[#252525] border border-[#333333] hover:border-[#00ffcc] text-xs font-medium text-[#00ffcc] px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition cursor-pointer"
+            title="Download .md file immediately"
+          >
+            <FileText className="w-3.5 h-3.5 text-[#00ffcc]" />
+            <span>Download .MD</span>
+          </button>
+
+          <button
             onClick={onOpenSpeakers}
             className="bg-[#1c1c1c] hover:bg-[#282828] border border-[#333333] text-xs font-medium text-[#cccccc] hover:text-white px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition cursor-pointer"
           >
@@ -158,7 +182,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
             className="bg-gradient-to-r from-[#00ffcc] to-[#0099ff] hover:brightness-110 text-black font-extrabold text-xs px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition shadow cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Export</span>
+            <span>Export Options</span>
           </button>
         </div>
       </div>
