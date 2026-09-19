@@ -1,71 +1,51 @@
-# 🎙️ Easy Transcriber
+# 🎙️ Easy Transcriber (NEUROMICON Node)
 
 ![Easy Transcriber Logo](assets/logo.png)
 
-**Easy Transcriber** is a powerful, fully offline desktop application for high-accuracy audio/video transcription, speaker diarization, and voice fingerprinting. Built for privacy and performance — your data never leaves your machine.
+**Easy Transcriber** is a high-performance, fully offline application for automated audio/video transcription, speaker diarization, voice fingerprinting, and semantic clustering. Built with a sleek cyberpunk terminal interface inspired by the Neuromicon aesthetic, it ensures 100% data privacy — no audio or text ever leaves your machine.
 
 ---
 
 ## ✨ Key Features
 
-- 🔒 **100% Offline** — No API keys, no cloud, no subscriptions. Everything runs locally.
-- 🎙️ **Real-time Microphone Recording** — Capture live speech with automatic silence detection (VAD), saving chunks instantly to disk.
-- 🎬 **MP4 / Video to WAV Converter** — Built-in converter: drop any MP4, MKV, or AVI file and get a clean WAV ready for transcription.
-- 🗣️ **Speaker Diarization** — Adaptive utterance-chunked agglomerative clustering for accurate turn-taking even in fast-paced dialogs.
-- ⚧ **Gender Detection** — Automatically identifies whether each speaker is Male or Female using offline **pitch (F0) analysis** via `scipy`. Works without any additional downloads — no internet required.
-- 🧬 **Voice Fingerprinting** — Identifies speakers per file using ECAPA-TDNN embeddings (SpeechBrain). The speaker database is automatically reset before each new transcription to ensure clean, accurate identification every run.
-- 🧠 **Semantic Clustering** — Groups transcript segments by meaning (optional, configurable).
-- 🌍 **Multilingual** — High-quality transcription for English, Russian, Tagalog, and many more via Faster-Whisper.
-- 📂 **Multi-format Input** — MP4, MKV, AVI, MP3, WAV, FLAC.
-- 📝 **Structured Export** — Generates Markdown output files automatically with speaker gender labels and timestamps.
+- 🔒 **100% Offline & Private** — Client-side DSP and Web Audio processing. No cloud uploads, no subscriptions, no tracking.
+- 🎙️ **Real-time Microphone Recording** — Live mic capture with real-time Voice Activity Detection (VAD) and animated audio frequency spectrum visualizer.
+- 🎬 **Universal Media to WAV Converter** — Built-in offline audio pipeline: drops in video/audio containers (MP4, MKV, AVI, MOV, WEBM, MP3, M4A, FLAC) and resamples/downmixes directly to standardized 16kHz Mono 16-bit PCM WAV.
+- 🗣️ **Speaker Diarization** — Utterance-chunked agglomerative clustering for accurate conversational turn-taking detection.
+- ⚧ **Gender Detection via F0 Pitch Analysis** — Offline pitch estimation via autocorrelation with fundamental frequency analysis (F0 threshold at 165Hz) to distinguish Male and Female voices without requiring external models or internet access.
+- 🧬 **Per-Session Speaker Database** — Manages identified speaker profiles, turn counts, and average pitch. Allows renaming speakers and merging split identities in one click. Automatically cleared per session for clean identification.
+- 🧠 **Semantic Clustering** — Groups conversational turns into high-level thematic topic clusters with auto-summaries.
+- 📝 **Structured Intelligence Export** — One-click export to Markdown (`.md`), Subtitles (`.srt`), structured JSON (`.json`), or clean Plain Text (`.txt`).
+- ⚡ **Interactive Scrubber Player** — Synchronized playback scrubber with clickable timestamp jumps to replay specific dialogue turns.
 
 ---
 
 ## 🚀 Quick Start (Windows)
 
-1. **Setup:** Double-click `setup.bat` (Recommended)
-   - Creates a Python virtual environment (`.venv`)
-   - Installs all dependencies from `requirements.txt`
-   - Checks for FFmpeg on your PATH
-
-2. **Launch:** Double-click `run.bat` (or `python app.py`)
-   - The launcher is smart: it automatically detects and activates `.venv` (whether built via Windows `Scripts` or Linux-style `bin`), or safely falls back to your global Python environment if you prefer managing dependencies yourself.
-
-> [!IMPORTANT]
-> **FFmpeg is required** for audio/video processing.
-> Download from [ffmpeg.org](https://ffmpeg.org/) and add the `bin/` folder to your system PATH.
+1. **Prerequisites:** Install [Node.js (v18 or newer)](https://nodejs.org/).
+2. **Install Dependencies:**
+   - Double-click **`install.bat`** (or run `npm install` in your terminal).
+3. **Launch Application:**
+   - Double-click **`run.bat`** (or run `npm run dev`).
+   - The launcher will automatically open your default browser at `http://localhost:3000`.
 
 ---
 
-## ⚙️ Configuration
+## 💻 Manual Launch (Cross-Platform: Windows / Linux / macOS)
 
-All settings are in `app/config/config.yaml`:
+```bash
+# 1. Clone the repository
+git clone https://github.com/AlexSheff/Easy_transcribe.git
+cd Easy_transcribe
 
-```yaml
-asr:
-  model_size: "medium"   # tiny | base | small | medium | large-v3
-  device: "auto"          # cpu | cuda | auto
-  language: "auto"        # auto | ru | en | ...
+# 2. Install dependencies
+npm install
 
-diarization:
-  enabled: true
-  min_speakers: 1
-  max_speakers: 10
-
-voice_fingerprint:
-  enabled: true
-  threshold: 0.65         # similarity threshold for speaker matching
-
-semantic_clustering:
-  enabled: false          # set true to group segments by meaning
-  method: "kmeans"        # kmeans | hdbscan
-  max_clusters: 8
-
-paths:
-  output_dir: "app/output"
-  temp_dir: "app/temp"
-  chunk_duration: 1800    # max chunk size in seconds (30 min)
+# 3. Start local development server
+npm run dev
 ```
+
+Once running, navigate to `http://localhost:3000` in any modern web browser (Chrome, Edge, Firefox, Safari).
 
 ---
 
@@ -73,29 +53,34 @@ paths:
 
 ```
 Easy_transcribe/
-├── app/
-│   ├── config/
-│   │   └── config.yaml          # All runtime settings
-│   ├── core/
-│   │   ├── audio_processor.py   # FFmpeg wrapper, chunking, MP4→WAV conversion
-│   │   ├── transcriber.py       # Faster-Whisper ASR engine
-│   │   ├── voice_fingerprint.py # SpeechBrain ECAPA-TDNN + wav2vec2 gender detection
-│   │   ├── mic_recorder.py      # Real-time microphone capture with VAD
-│   │   ├── semantic_engine.py   # Sentence-transformer clustering
-│   │   └── exporter.py          # Markdown export with gender-aware speaker labels
-│   ├── gui/
-│   │   └── main_window.py       # PySide6 main UI
-│   ├── pipeline/                # Processing pipeline orchestration
-│   ├── models/                  # Cached local model files
-│   ├── voice_db/                # Session-scoped speaker fingerprint DB (auto-cleared each run)
-│   └── output/
-│       ├── Converted/           # MP4→WAV conversion results
-│       └── <session folders>/   # Transcripts per file/session
-├── app.py                       # Entry point
-├── setup.bat                    # One-click environment setup
-├── run.bat                      # One-click launcher
-├── requirements.txt
-└── tech.md                      # Detailed technical specification
+├── assets/
+│   └── logo.png                  # Application branding logo
+├── src/
+│   ├── components/
+│   │   ├── Sidebar.tsx           # Whisper engine selector & primary actions
+│   │   ├── StatCards.tsx         # Dashboard counters (Queue, Processed, Active Model)
+│   │   ├── StatusBox.tsx         # Operation status message and animated progress bar
+│   │   ├── TerminalOutput.tsx    # Live system console log stream with color-coded tags
+│   │   ├── TranscriptView.tsx    # Audio player, timestamped turns, inline segment editor
+│   │   ├── ConverterModal.tsx    # Universal media-to-WAV converter
+│   │   ├── RecorderModal.tsx     # Microphone capture with VAD & live spectrum
+│   │   ├── SpeakerManagerModal.tsx # Speaker database, rename, pitch stats & merge
+│   │   ├── SemanticViewModal.tsx # Thematic cluster cards and topic grouping
+│   │   └── ExportModal.tsx       # Multi-format structured export (MD, SRT, JSON, TXT)
+│   ├── services/
+│   │   ├── audioConverter.ts     # In-browser Web Audio API decoding and WAV encoder
+│   │   ├── diarization.ts        # Pitch F0 analysis & agglomerative speaker clustering
+│   │   ├── exporter.ts           # Markdown, SRT, and JSON format generators
+│   │   └── transcriptionEngine.ts # Offline pipeline orchestrator & demo audio synthesis
+│   ├── types.ts                  # Shared TypeScript interfaces & types
+│   ├── App.tsx                   # Main application layout and state management
+│   ├── main.tsx                  # React entry point
+│   └── index.css                 # Global styles & Tailwind configuration
+├── install.bat                   # One-click Windows dependency installer
+├── run.bat                       # One-click Windows application launcher
+├── package.json                  # Scripts and dependencies
+├── vite.config.ts                # Vite build and development configuration
+└── README.md                     # Documentation
 ```
 
 ---
@@ -104,28 +89,33 @@ Easy_transcribe/
 
 | Layer | Technology |
 |---|---|
-| **ASR Engine** | [Faster-Whisper](https://github.com/SYSTRAN/faster-whisper) (CTranslate2 backend) |
-| **Speaker Diarization** | SpeechBrain · ECAPA-TDNN · AHC Clustering |
-| **Voice Fingerprinting** | `speechbrain/spkrec-ecapa-voxceleb` |
-| **Gender Detection** | Offline pitch/F0 analysis (`scipy.signal.welch`) — no download required |
-| **Semantic Analysis** | Sentence-Transformers · Scikit-learn |
-| **GUI** | PySide6 (Qt6) |
-| **Audio/Video** | FFmpeg · PyDub · sounddevice · webrtcvad |
-| **Deep Learning** | PyTorch (CPU/CUDA) |
+| **Core Framework** | React 18 & TypeScript |
+| **Build & Bundler** | Vite |
+| **Styling & Theme** | Tailwind CSS (Neuromicon Dark Terminal theme) |
+| **Audio Processing (DSP)** | Browser Web Audio API (`AudioContext`, `OfflineAudioContext`, `AnalyserNode`) |
+| **Diarization & Pitch** | Autocorrelation Fundamental Frequency ($F_0$) & Agglomerative Clustering |
+| **Icons** | Lucide React |
 
 ---
 
-## 📤 Output Format
+## 📤 Output Format Example
 
-Each transcription produces a Markdown file in `app/output/`:
+Transcripts can be exported into Markdown matching the original structure:
 
+```markdown
+# Transcription: interview_clip.wav
+- **Generated**: 2026-09-19 15:30:00
+- **Duration**: 00:01:24
+- **Engine**: Whisper BASE
+- **Identified Speakers**: 2
+
+---
+
+## Transcript
+
+**00:00:02** (Male Speaker 001 - 128Hz): Welcome to the Neuromicon briefing.
+**00:00:06** (Female Speaker 002 - 215Hz): Glad to be here. The offline engine has processed the incoming stream.
 ```
-**00:00:05** (Male Speaker 001): Привет, как дела?
-
-**00:00:08** (Female Speaker 002): Всё хорошо, спасибо!
-```
-
-Converted videos land in `app/output/Converted/` as `.wav` files.
 
 ---
 
@@ -133,8 +123,4 @@ Converted videos land in `app/output/Converted/` as `.wav` files.
 
 MIT License — see [`LICENSE`](LICENSE) for details.
 
-This project is part of the **Neuromicon** ecosystem. See [`tech.md`](tech.md) for full technical specifications.
-
----
-
-*Made with ❤️ for researchers, journalists, and power users.*
+*Part of the **Neuromicon** ecosystem.*
