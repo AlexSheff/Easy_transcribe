@@ -72,3 +72,40 @@ export interface ConversionItem {
   convertedUrl?: string;
   error?: string;
 }
+
+export type MarkdownPreset = 'standard' | 'obsidian' | 'meeting' | 'clean' | 'timestamps';
+
+export type EngineBackendType = 'local-faster-whisper' | 'offline-transformers' | 'local-acoustic';
+
+export type DiarizationEngineType = 'speechbrain-ecapa' | 'pyannote-segmentation' | 'acoustic-cluster';
+
+export type AsrEngineType = 'faster-whisper' | 'gigaam-v3';
+
+export interface LocalEngineConfig {
+  backend: EngineBackendType;
+  localModelPath: string;
+  localServerUrl?: string;
+  blockRemoteDownloads: boolean;
+  device?: 'cuda' | 'cpu' | 'auto';
+  vadSensitivity?: number;
+  minSilenceMs?: number;
+  beamSize?: number;
+  temperature?: number;
+  language?: string;
+  diarizationEngine?: DiarizationEngineType;
+  asrEngine?: AsrEngineType;
+  hfCacheDir?: string;
+}
+
+export interface BatchFileItem {
+  id: string;
+  file: File;
+  name: string;
+  size: number;
+  status: 'queued' | 'processing' | 'completed' | 'error';
+  progress: number;
+  stageMessage?: string;
+  error?: string;
+  result?: ProcessedFile;
+}
+

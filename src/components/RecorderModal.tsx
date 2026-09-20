@@ -132,7 +132,7 @@ export const RecorderModal: React.FC<RecorderModalProps> = ({
           const rec = new SpeechRecognition();
           rec.continuous = true;
           rec.interimResults = true;
-          rec.lang = navigator.language || 'ru-RU';
+          rec.lang = navigator.language || 'en-US';
           rec.onresult = (event: any) => {
             let current = '';
             for (let i = event.resultIndex; i < event.results.length; ++i) {

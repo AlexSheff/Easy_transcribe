@@ -2,7 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 
 console.log('===================================================');
-console.log('  EASY TRANSCRIBER - SETUP');
+console.log('  EASY TSCRIBE - SETUP');
 console.log('===================================================\n');
 
 console.log('Installing dependencies via npm...');

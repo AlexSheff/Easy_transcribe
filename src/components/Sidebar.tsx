@@ -18,12 +18,14 @@ interface SidebarProps {
   onImportClick: () => void;
   onConvertClick: () => void;
   onRecordClick: () => void;
-  onLoadDemoClick: () => void;
+  onOpenModelSettings: () => void;
   onOpenSpeakers: () => void;
   onOpenSemantic: () => void;
   onOpenExport: () => void;
   hasActiveTranscript: boolean;
   isProcessing: boolean;
+  engineBackend?: string;
+  blockRemoteDownloads?: boolean;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -32,12 +34,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onImportClick,
   onConvertClick,
   onRecordClick,
-  onLoadDemoClick,
+  onOpenModelSettings,
   onOpenSpeakers,
   onOpenSemantic,
   onOpenExport,
   hasActiveTranscript,
   isProcessing,
+  engineBackend = 'local-faster-whisper',
+  blockRemoteDownloads = true,
 }) => {
   return (
     <aside 
@@ -59,16 +63,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
             />
           </div>
           <div>
-            <div className="text-[#00ffcc] font-black text-xl tracking-[0.25em]">NEUROMICON</div>
+            <div className="text-[#00ffcc] font-black text-xl tracking-[0.15em]">Easy TScribe</div>
             <div className="text-[10px] text-[#666666] tracking-wider uppercase">Transcriber Node v1.0</div>
           </div>
         </div>
 
-        {/* Model Selector */}
+        {/* Model Selector & Engine Settings */}
         <div className="space-y-2">
-          <label className="text-xs font-bold text-[#888888] uppercase tracking-wider block">
-            Whisper Engine
-          </label>
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-bold text-[#888888] uppercase tracking-wider block">
+              Whisper Engine
+            </label>
+            <button
+              onClick={onOpenModelSettings}
+              className="text-[10px] text-[#00ffcc] hover:underline flex items-center gap-1 font-mono uppercase cursor-pointer"
+              title="Configure local model directory and execution backend"
+            >
+              <Sliders className="w-3 h-3" />
+              <span>Model Path</span>
+            </button>
+          </div>
           <div className="relative">
             <select
               id="model-selector"
@@ -80,13 +94,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <option value="tiny">tiny (39 MB · Ultra Fast)</option>
               <option value="base">base (74 MB · Balanced)</option>
               <option value="small">small (244 MB · Accurate)</option>
-              <option value="medium">medium (769 MB · High Precision)</option>
-              <option value="large-v3">large-v3 (1.5 GB · Multilingual Studio)</option>
+              <option value="medium">medium (769 MB · Systran Local)</option>
+              <option value="large-v3">large-v3 (1.5 GB · Studio Precision)</option>
             </select>
           </div>
           <div className="text-[11px] text-[#555555] flex items-center justify-between px-1">
-            <span>Precision: INT8 Quantized</span>
-            <span className="text-[#00ffcc]">Offline Mode</span>
+            <span>{engineBackend === 'local-faster-whisper' ? 'faster-whisper' : 'Offline Engine'}</span>
+            <span className={blockRemoteDownloads ? 'text-[#00ffcc]' : 'text-[#ffaa00]'}>
+              {blockRemoteDownloads ? '● Local Only' : '○ Hybrid'}
+            </span>
           </div>
         </div>
 
@@ -123,17 +139,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
         </div>
 
-        {/* Quick Demo Button */}
+        {/* Transcripts Directory Status */}
         <div className="pt-2">
-          <button
-            id="load-demo-btn"
-            onClick={onLoadDemoClick}
-            disabled={isProcessing}
-            className="w-full bg-[#161616] hover:bg-[#202020] border border-[#2a2a2a] text-[#00ffcc] text-xs font-semibold py-2 px-3 rounded-lg flex items-center justify-center space-x-2 transition-all cursor-pointer disabled:opacity-40"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-[#00ffcc]" />
-            <span>Load Dialogue Demo</span>
-          </button>
+          <div className="bg-[#141418] border border-[#22222e] rounded-lg p-2.5 text-xs">
+            <div className="flex items-center justify-between text-[#888899] mb-1">
+              <span className="font-mono text-[10px] uppercase tracking-wider">Storage Target</span>
+              <span className="text-[10px] text-[#00ffcc] font-mono">Auto-Save</span>
+            </div>
+            <div className="font-mono text-[11px] text-white truncate flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#00ffcc] shrink-0"></span>
+              <span className="truncate">./transcripts/*.md</span>
+            </div>
+          </div>
         </div>
 
         {/* Session Tools (Speaker DB & Semantic Clusters & Export) */}

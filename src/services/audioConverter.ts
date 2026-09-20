@@ -57,11 +57,11 @@ async function readMediaFileBuffer(
 
           if (isLocked) {
             throw new Error(
-              `Файл «${file.name}» заблокирован другой программой или системой Windows (NotReadableError).\n\n` +
-              `Как это быстро исправить:\n` +
-              `1. Закройте программу, которая создала или открыла файл (OBS Studio, плеер "Кино и ТВ", VLC, видеоредактор).\n` +
-              `2. Если в OBS всё ещё идёт запись — нажмите "Остановить запись".\n` +
-              `3. Самый быстрый способ: скопируйте этот файл в проводнике (Ctrl+C, затем Ctrl+V) и перетащите созданную копию файла в программу.`
+              `File "${file.name}" is locked by another program or the operating system (NotReadableError).\n\n` +
+              `Suggested solutions:\n` +
+              `1. Close the application that is writing or viewing the file (e.g. OBS Studio, media player, video editor).\n` +
+              `2. If OBS is actively recording, click "Stop Recording".\n` +
+              `3. Quick workaround: make a copy of the file in File Explorer (Ctrl+C, Ctrl+V) and drop the copy into Easy TScribe.`
             );
           }
           throw finalErr;
@@ -87,7 +87,7 @@ export async function convertMediaToWav(
     audioBuffer = await offlineCtx.decodeAudioData(arrayBuffer);
   } catch {
     await offlineCtx.close().catch(() => {});
-    throw new Error(`Failed to decode audio track from «${file.name}». Убедитесь, что видео/аудио файл содержит звуковую дорожку.`);
+    throw new Error(`Failed to decode audio track from "${file.name}". Please ensure the media file contains a valid audio stream.`);
   }
 
   try {

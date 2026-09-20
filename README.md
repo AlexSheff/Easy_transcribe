@@ -1,66 +1,80 @@
-# 🎙️ Easy Transcriber (NEUROMICON Node)
+# 🎙️ Easy TScribe
 
 ![Easy Transcriber Logo](assets/logo.png)
 
-**Easy Transcriber** is a high-performance, fully offline application for automated audio/video transcription, speaker diarization, voice fingerprinting, and semantic clustering. Built with a sleek cyberpunk terminal interface inspired by the Neuromicon aesthetic, it ensures 100% data privacy — no audio or text ever leaves your machine.
+**Easy TScribe** is a professional, 100% private, and fully offline suite for automated audio/video transcription, neural speaker diarization, voice identification, and Markdown document generation. 
+
+Everything runs strictly on your machine — zero cloud uploads, zero external API keys, and 100% data confidentiality.
 
 ---
 
-## ✨ Key Features
+## ✨ Key Capabilities
 
-- 🔒 **100% Offline & Private** — Client-side DSP and Web Audio processing. No cloud uploads, no subscriptions, no tracking.
-- 🎙️ **Real-time Microphone Recording** — Live mic capture with real-time Voice Activity Detection (VAD) and animated audio frequency spectrum visualizer.
-- 🎬 **Universal Media to WAV Converter** — Built-in offline audio pipeline: drops in video/audio containers (MP4, MKV, AVI, MOV, WEBM, MP3, M4A, FLAC) and resamples/downmixes directly to standardized 16kHz Mono 16-bit PCM WAV.
-- 🌐 **Bilingual (Russian & English) Support** — Automatic detection of language and file naming conventions with localized speaker labeling and cluster summaries.
-- 🗣️ **Speaker Diarization & Voice Matching** — Utterance-chunked agglomerative clustering with dynamic fundamental frequency ($F_0$) pitch tracking for conversational turn-taking detection.
-- ⚧ **Gender Detection via F0 Pitch Analysis** — Offline pitch estimation via autocorrelation with fundamental frequency analysis ($F_0$ threshold at 165Hz) to distinguish Male and Female voices without requiring external models or internet access.
-- 🧬 **Per-Session Speaker Database** — Manages identified speaker profiles, turn counts, and average pitch. Allows renaming speakers and merging split identities in one click. Automatically cleared per session for clean identification.
-- 🧠 **Semantic Clustering** — Groups conversational turns into high-level thematic topic clusters with auto-summaries.
-- 📝 **Structured Intelligence Export** — One-click export to Markdown (`.md`), Subtitles (`.srt`), structured JSON (`.json`), or clean Plain Text (`.txt`) with UTF-8 encoding.
-- ⚡ **Interactive Scrubber Player** — Synchronized playback scrubber with clickable timestamp jumps to replay specific dialogue turns.
+- 🔒 **100% Offline & Private** — Audio and transcripts never leave your machine (`HF_HUB_OFFLINE=1` enforced).
+- 🚀 **Unified Single-Click Launcher (`start.bat`)** — Automatically verifies Node.js, installs dependencies if needed, starts the background Whisper/diarization engine, creates the `transcripts/` folder, and launches the UI in your browser.
+- 📁 **Automatic Markdown Export to Project Folder** — Every completed audio/video transcription is automatically saved as a structured Markdown (`.md`) document inside the `./transcripts/` project folder.
+- 🗣️ **Neural Speaker Diarization** — Distinguishes speakers using acoustic embeddings and agglomerative cosine clustering with fundamental frequency ($F_0$) pitch tracking.
+- ⚡ **Batch Processing Queue** — Drag and drop multiple audio/video files at once (MP4, MKV, AVI, MOV, MP3, WAV, FLAC, M4A, OGG). Track progress per file with real-time status and progress indicators.
+- 📝 **Standard Clean Markdown Preset** — Generates standardized transcripts with full header metadata, speaker turn counts, timestamps, and dialogues.
+- 🎛️ **Audio Converter & Live Mic Recorder** — Built-in converter to standardized 16kHz mono WAV and live voice capture with real-time spectrum visualization.
+- 🖥️ **Modern Non-Overloaded UI** — Intuitive dashboard with 3 primary metric cards, system status bar, terminal logs, interactive playback scrubber, inline segment editor, and quick modal tools.
 
 ---
 
 ## 🚀 Quick Start (Windows)
 
-1. **Prerequisites:** Install [Node.js (v18, v20 or newer LTS)](https://nodejs.org/). Make sure the option **"Add to PATH"** is checked during installation.
-2. **One-Click Launch:**
-   - Double-click **`start.bat`** (All-in-one launcher: automatically checks Node.js, installs dependencies on first run, starts the server, and opens your browser at `http://localhost:3000`).
-   - Alternatively:
-     - Run **`install.bat`** to install dependencies.
-     - Run **`run.bat`** to start the local server.
-     - Or in Command Prompt / PowerShell: run `node setup.js` followed by `npm run dev`.
+Simply double-click:
+
+```
+start.bat
+```
+
+The launcher will:
+1. Check for **Node.js** (prompts if missing).
+2. Install npm dependencies automatically on first run.
+3. Ensure the **`transcripts/`** folder exists in the project root.
+4. Auto-detect Python and launch the local **`faster-whisper` + Diarization** daemon in the background.
+5. Open **`http://localhost:3000`** in your default web browser and start the application.
 
 ---
 
 ## 💻 Manual Launch (Cross-Platform: Windows / Linux / macOS)
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/AlexSheff/Easy_transcribe.git
-cd Easy_transcribe
-
-# 2. Install dependencies
+# 1. Install dependencies
 npm install
 
-# 3. Start local development server
+# 2. (Optional) Run the local Python faster-whisper daemon
+python server_faster_whisper.py
+
+# 3. Start the application
 npm run dev
 ```
 
-Once running, navigate to `http://localhost:3000` in any modern web browser (Chrome, Edge, Firefox, Safari).
+Open `http://localhost:3000` in your web browser.
 
 ---
 
-## 🛠️ Troubleshooting & Tips
+## 📂 Auto-Saved Output Format
 
-- **`install.bat` says Node.js is not found**:
-  - Verify that Node.js is installed from [nodejs.org](https://nodejs.org/).
-  - Restart your command prompt or terminal after installing Node.js so that the system environment variables update.
-  - The script now automatically inspects `%ProgramFiles%\nodejs` and `%LocalAppData%\Programs\node\nodejs`.
-- **Browser Audio Permissions**:
-  - When using the real-time recording feature, grant microphone permissions to the browser.
-- **Large Files**:
-  - Processing happens completely locally within the browser Web Audio sandbox. For multi-hour files, 16kHz WAV conversion ensures minimal memory overhead.
+Transcripts are automatically written to `./transcripts/transcript_<filename>.md`:
+
+```markdown
+# Transcript: 2026-09-04 02-17-31.mp4
+Date: 2026-09-20 21:38:42
+Total Segments: 117
+
+## Speakers
+
+- Male Speaker 001: 84 segment(s)
+- Male Speaker 002: 31 segment(s)
+- Male Speaker 003: 2 segment(s)
+
+## Transcript
+
+**[00:02] Male Speaker 001:** Initial dialogue statement recorded here.
+**[00:15] Male Speaker 002:** Response from second speaker with detected turn-taking.
+```
 
 ---
 
@@ -69,73 +83,49 @@ Once running, navigate to `http://localhost:3000` in any modern web browser (Chr
 ```
 Easy_transcribe/
 ├── assets/
-│   └── logo.png                  # Application branding logo
+│   └── logo.png                  # Application branding
+├── transcripts/                  # Auto-saved Markdown transcripts (.md)
 ├── src/
 │   ├── components/
-│   │   ├── Sidebar.tsx           # Whisper engine selector & primary actions
-│   │   ├── StatCards.tsx         # Dashboard counters (Queue, Processed, Active Model)
-│   │   ├── StatusBox.tsx         # Operation status message and animated progress bar
-│   │   ├── TerminalOutput.tsx    # Live system console log stream with color-coded tags
-│   │   ├── TranscriptView.tsx    # Audio player, timestamped turns, inline segment editor
-│   │   ├── ConverterModal.tsx    # Universal media-to-WAV converter
+│   │   ├── Sidebar.tsx           # Model selector, primary actions, and status
+│   │   ├── StatCards.tsx         # Dashboard metrics (Queue, Processed, Active Model)
+│   │   ├── StatusBox.tsx         # Operation status & progress bar
+│   │   ├── TerminalOutput.tsx    # Live system console log stream
+│   │   ├── TranscriptView.tsx    # Audio player, timestamped turns & inline editor
+│   │   ├── BatchQueuePanel.tsx   # Batch processing queue and batch export
+│   │   ├── ConverterModal.tsx    # Media-to-WAV converter
 │   │   ├── RecorderModal.tsx     # Microphone capture with VAD & live spectrum
-│   │   ├── SpeakerManagerModal.tsx # Speaker database, rename, pitch stats & merge
-│   │   ├── SemanticViewModal.tsx # Thematic cluster cards and topic grouping
-│   │   └── ExportModal.tsx       # Multi-format structured export (MD, SRT, JSON, TXT)
+│   │   ├── SpeakerManagerModal.tsx # Speaker database, rename & merge tools
+│   │   ├── SemanticViewModal.tsx # Thematic topic clusters
+│   │   ├── ModelSettingsModal.tsx # Whisper & VAD silence thresholds
+│   │   └── ExportModal.tsx       # Standard, Obsidian, SRT, and JSON exports
 │   ├── services/
 │   │   ├── audioConverter.ts     # In-browser Web Audio API decoding and WAV encoder
-│   │   ├── pitchAnalyzer.ts      # Autocorrelation F0 pitch analysis & gender detection
-│   │   ├── exporter.ts           # Markdown, SRT, and JSON format generators
-│   │   └── transcriptionEngine.ts # Offline pipeline orchestrator & speech intervals
-│   ├── types.ts                  # Shared TypeScript interfaces & types
+│   │   ├── pitchAnalyzer.ts      # Autocorrelation F0 pitch analysis
+│   │   ├── exporter.ts           # Standard & Obsidian Markdown generators
+│   │   └── transcriptionEngine.ts # Offline pipeline orchestrator & Python bridge
+│   ├── types.ts                  # Shared TypeScript types
 │   ├── App.tsx                   # Main application layout and state management
 │   ├── main.tsx                  # React entry point
-│   └── index.css                 # Global styles & Tailwind configuration
-├── install.bat                   # One-click Windows dependency installer
-├── run.bat                       # One-click Windows application launcher
+│   └── index.css                 # Global styling
+├── server_faster_whisper.py      # Local faster-whisper & Pyannote diarization server
+├── start.bat                     # Single master launcher for Windows
 ├── package.json                  # Scripts and dependencies
-├── vite.config.ts                # Vite build and development configuration
+├── vite.config.ts                # Vite config with auto-save markdown plugin
 └── README.md                     # Documentation
 ```
 
 ---
 
-## 🛠️ Tech Stack
+## 🛡️ Privacy Guarantee
 
-| Layer | Technology |
-|---|---|
-| **Core Framework** | React 18 & TypeScript |
-| **Build & Bundler** | Vite |
-| **Styling & Theme** | Tailwind CSS (Neuromicon Dark Terminal theme) |
-| **Audio Processing (DSP)** | Browser Web Audio API (`AudioContext`, `OfflineAudioContext`, `AnalyserNode`) |
-| **Diarization & Pitch** | Autocorrelation Fundamental Frequency ($F_0$) & Agglomerative Clustering |
-| **Icons** | Lucide React |
+- **No Remote Network Calls**: Models operate from local disk caches (`%USERPROFILE%\.cache\huggingface\hub`).
+- **No Cloud Dependencies**: Audio conversion, VAD, transcription, and diarization run entirely on local compute.
+- **Local Persistence**: Markdown files are saved directly into the local `transcripts/` directory.
 
 ---
 
-## 📤 Output Format Example
+## 📄 License
 
-Transcripts can be exported into Markdown matching the original structure:
+MIT License. Designed for high productivity and privacy-first transcription.
 
-```markdown
-# Transcription: interview_clip.wav
-- **Generated**: 2026-09-19 15:30:00
-- **Duration**: 00:01:24
-- **Engine**: Whisper BASE
-- **Identified Speakers**: 2
-
----
-
-## Transcript
-
-**00:00:02** (Male Speaker 001 - 128Hz): Welcome to the Neuromicon briefing.
-**00:00:06** (Female Speaker 002 - 215Hz): Glad to be here. The offline engine has processed the incoming stream.
-```
-
----
-
-## 🛡️ License
-
-MIT License — see [`LICENSE`](LICENSE) for details.
-
-*Part of the **Neuromicon** ecosystem.*
