@@ -7,7 +7,6 @@ import {
   Mic, 
   Sparkles, 
   Sliders, 
-  Layers, 
   Download, 
   Radio
 } from 'lucide-react';
@@ -20,7 +19,6 @@ interface SidebarProps {
   onRecordClick: () => void;
   onOpenModelSettings: () => void;
   onOpenSpeakers: () => void;
-  onOpenSemantic: () => void;
   onOpenExport: () => void;
   hasActiveTranscript: boolean;
   isProcessing: boolean;
@@ -36,7 +34,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onRecordClick,
   onOpenModelSettings,
   onOpenSpeakers,
-  onOpenSemantic,
   onOpenExport,
   hasActiveTranscript,
   isProcessing,
@@ -94,8 +91,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <option value="tiny">tiny (39 MB · Ultra Fast)</option>
               <option value="base">base (74 MB · Balanced)</option>
               <option value="small">small (244 MB · Accurate)</option>
-              <option value="medium">medium (769 MB · Systran Local)</option>
-              <option value="large-v3">large-v3 (1.5 GB · Studio Precision)</option>
+              <option value="medium">medium (769 MB · Best local)</option>
             </select>
           </div>
           <div className="text-[11px] text-[#555555] flex items-center justify-between px-1">
@@ -153,7 +149,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
 
-        {/* Session Tools (Speaker DB & Semantic Clusters & Export) */}
+        {/* Session Tools (Speakers & Export) */}
         {hasActiveTranscript && (
           <div className="pt-3 border-t border-[#222222] space-y-2">
             <div className="text-[10px] uppercase font-bold text-[#666666] tracking-wider px-1">
@@ -167,18 +163,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <Sliders className="w-3.5 h-3.5 text-[#00ffcc]" />
                 <span>Speaker Manager</span>
               </div>
-              <span className="text-[10px] text-[#00ffcc] font-mono">F0 Pitch</span>
-            </button>
-
-            <button
-              onClick={onOpenSemantic}
-              className="w-full bg-[#161616] hover:bg-[#222222] text-[#cccccc] hover:text-white text-xs font-medium py-2 px-3 rounded-lg flex items-center justify-between border border-[#262626] transition cursor-pointer"
-            >
-              <div className="flex items-center space-x-2">
-                <Layers className="w-3.5 h-3.5 text-[#ffcc00]" />
-                <span>Semantic Clusters</span>
-              </div>
-              <span className="text-[10px] text-[#ffcc00] font-mono">K-Means</span>
+              <span className="text-[10px] text-[#00ffcc] font-mono">Rename / Merge</span>
             </button>
 
             <button

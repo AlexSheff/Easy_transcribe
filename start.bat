@@ -34,14 +34,19 @@ if not exist "transcripts" (
     echo [*] Initialized auto-save transcripts folder: %CD%\transcripts
 )
 
-:: 3. Launch local faster-whisper + diarization daemon if Python is available
+:: 3. Launch local faster-whisper + diarization server
 where python >nul 2>&1
 if not errorlevel 1 (
-    echo [*] Python detected. Checking local faster-whisper daemon...
-    echo [*] Strict offline mode active: HF_HUB_OFFLINE=1
-    start "Easy TScribe - Local Python Engine" /min python server_faster_whisper.py
+    python -c "import faster_whisper" >nul 2>&1
+    if errorlevel 1 (
+        echo [!] Python packages are missing. Run:  pip install -r requirements.txt
+        echo [!] The UI will start, but transcription will not work until the server runs.
+    ) else (
+        echo [*] Starting local engine. Strict offline mode: HF_HUB_OFFLINE=1
+        start "Easy TScribe - Local Python Engine" /min python server_faster_whisper.py
+    )
 ) else (
-    echo [!] Python not detected. Running built-in WebGPU / browser transcription engine.
+    echo [!] Python not found. Install Python 3.10+ and run: pip install -r requirements.txt
 )
 
 :: 4. Launch web application in browser and start dev server

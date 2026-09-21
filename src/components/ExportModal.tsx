@@ -253,7 +253,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             </div>
             <div className="text-[#666666] font-mono text-[11px]">
               {mdPreset === 'obsidian' && 'YAML Frontmatter + Tags + Callout Cards'}
-              {mdPreset === 'meeting' && 'Speaker Chronometry + Topics + Verbatim Protocol'}
+              {mdPreset === 'meeting' && 'Speaker Chronometry + Verbatim Protocol'}
               {mdPreset === 'clean' && 'Minimalist Dialogue for Quick Sharing'}
               {mdPreset === 'timestamps' && 'Line-by-line intervals [00:00 - 00:05]'}
             </div>

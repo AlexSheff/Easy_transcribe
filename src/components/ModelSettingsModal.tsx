@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { LocalEngineConfig, EngineBackendType } from '../types';
-import { Settings, Server, ShieldCheck, CheckCircle2, XCircle, RefreshCw, Cpu, HardDrive, HelpCircle } from 'lucide-react';
+import { ShieldCheck, CheckCircle2, XCircle, RefreshCw, Cpu, HardDrive } from 'lucide-react';
 
 interface ModelSettingsModalProps {
   isOpen: boolean;
@@ -17,15 +17,15 @@ export const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({
   onSaveConfig,
   onAddLog,
 }) => {
-  const [localPath, setLocalPath] = useState(config.localModelPath);
+  const [localPath, setLocalPath] = useState(config.localModelPath || '/models/');
   const [backend, setBackend] = useState<EngineBackendType>(config.backend);
   const [serverUrl, setServerUrl] = useState(config.localServerUrl || 'http://127.0.0.1:8000');
   const [blockRemote, setBlockRemote] = useState(config.blockRemoteDownloads);
   const [device, setDevice] = useState<'cuda' | 'cpu' | 'auto'>(config.device || 'auto');
   const [beamSize, setBeamSize] = useState(config.beamSize || 5);
   const [minSilenceMs, setMinSilenceMs] = useState(config.minSilenceMs || 250);
-  const [diarizationEngine, setDiarizationEngine] = useState(config.diarizationEngine || 'speechbrain-ecapa');
-  const [vadSensitivity, setVadSensitivity] = useState(config.vadSensitivity || 0.5);
+  const [maxSpeakers, setMaxSpeakers] = useState(config.maxSpeakers ?? 3);
+  const [exactSpeakers, setExactSpeakers] = useState(config.exactSpeakers ?? false);
 
   const [testingStatus, setTestingStatus] = useState<'idle' | 'testing' | 'online' | 'offline'>('idle');
   const [testMessage, setTestMessage] = useState('');
@@ -48,16 +48,17 @@ export const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({
       if (res.ok) {
         const data = await res.json();
         setTestingStatus('online');
-        const diarizer = data.diarizer_type || 'neural';
-        setTestMessage(`Server Online: ${data.engine || 'faster-whisper'} ready with [${diarizer}] diarization.`);
-        onAddLog('DONE', `Local backend at ${targetUrl} verified online with ${diarizer} diarization.`);
+        const diarizer = data.diarizer_type || 'unknown';
+        const models = Array.isArray(data.whisper_models) && data.whisper_models.length ? data.whisper_models.join(', ') : 'none found';
+        setTestMessage(`Server online. Whisper models: ${models}. Diarizer: ${diarizer}.`);
+        onAddLog('DONE', `Local backend at ${targetUrl} online. Models: ${models}. Diarizer: ${diarizer}.`);
       } else {
         setTestingStatus('offline');
         setTestMessage(`Server returned HTTP ${res.status}`);
       }
     } catch (err: unknown) {
       setTestingStatus('offline');
-      setTestMessage('Unable to connect. Ensure "run_faster_whisper.bat" or "server_faster_whisper.py" is running.');
+      setTestMessage('Unable to connect. Start the server with: python server_faster_whisper.py');
       onAddLog('INFO', `Local backend test: server at ${targetUrl} is not currently responding.`);
     }
   };
@@ -65,18 +66,18 @@ export const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({
   const handleSave = () => {
     const updated: LocalEngineConfig = {
       ...config,
-      localModelPath: localPath.trim(),
+      localModelPath: localPath.trim() || '/models/',
       backend,
       localServerUrl: (serverUrl || 'http://127.0.0.1:8000').trim(),
       blockRemoteDownloads: blockRemote,
       device,
       beamSize,
       minSilenceMs,
-      diarizationEngine,
-      vadSensitivity,
+      maxSpeakers,
+      exactSpeakers,
     };
     onSaveConfig(updated);
-    onAddLog('SYSTEM', `Engine settings updated: Backend = ${backend}, Diarizer = ${diarizationEngine}, MinSilence = ${minSilenceMs}ms`);
+    onAddLog('SYSTEM', `Engine settings updated: Backend = ${backend}, MinSilence = ${minSilenceMs}ms, Speakers = ${exactSpeakers ? '' : '≤'}${maxSpeakers}`);
     onClose();
   };
 
@@ -126,36 +127,9 @@ export const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({
                 </label>
               </div>
               <p className="text-xs text-[#888899] mt-1">
-                When enabled, the application will NEVER initiate network downloads from Hugging Face Hub or remote CDNs. Models are loaded exclusively from your local disk.
+                Applies to the in-browser backend: when enabled, model weights are never downloaded and must exist locally. The Python server is always offline (HF_HUB_OFFLINE=1).
               </p>
             </div>
-          </div>
-
-          {/* Local Model Directory Path */}
-          <div className="space-y-2">
-            <label className="block text-xs font-mono uppercase tracking-wider text-[#9999aa]">
-              Local Model Snapshot Directory
-            </label>
-            <div className="relative">
-              <input
-                type="text"
-                value={localPath}
-                onChange={(e) => setLocalPath(e.target.value)}
-                placeholder="C:\Users\...\snapshots\..."
-                className="w-full px-3 py-2 bg-[#09090d] border border-[#333344] rounded-lg text-white font-mono text-xs focus:outline-none focus:border-[#00ffcc] transition-colors pr-10"
-              />
-              <button
-                type="button"
-                onClick={() => setLocalPath('C:\\Users\\admin_fdr\\.cache\\huggingface\\hub\\models--Systran--faster-whisper-medium\\snapshots\\08e178d48790749d25932bbc082711ddcfdfbc4f')}
-                title="Reset to default local Systran path"
-                className="absolute right-2 top-2 text-[10px] text-[#00ffcc] hover:underline uppercase font-mono"
-              >
-                Default
-              </button>
-            </div>
-            <p className="text-[11px] text-[#777788]">
-              Target directory containing CTranslate2 model files (e.g. <code className="text-[#00ffcc]">model.bin</code>, <code className="text-[#00ffcc]">vocabulary.json</code>).
-            </p>
           </div>
 
           {/* Engine Backend Selection */}
@@ -163,7 +137,7 @@ export const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({
             <label className="block text-xs font-mono uppercase tracking-wider text-[#9999aa]">
               Transcription Execution Backend
             </label>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div
                 onClick={() => setBackend('local-faster-whisper')}
                 className={`p-3 rounded-lg border cursor-pointer transition-all ${
@@ -177,7 +151,7 @@ export const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({
                   <span>Faster-Whisper</span>
                 </div>
                 <p className="text-[11px] leading-tight text-[#9999aa]">
-                  Direct CTranslate2 GPU/CPU engine using your local Systran model files.
+                  Recommended. Reads models from your Hugging Face cache; includes speaker diarization.
                 </p>
               </div>
 
@@ -194,26 +168,10 @@ export const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({
                   <span>WASM / WebGPU</span>
                 </div>
                 <p className="text-[11px] leading-tight text-[#9999aa]">
-                  Client-side runtime using cached browser weights. Zero remote downloads.
+                  Advanced. Runs in the browser from model files placed in public/models/. No speaker diarization.
                 </p>
               </div>
 
-              <div
-                onClick={() => setBackend('local-acoustic')}
-                className={`p-3 rounded-lg border cursor-pointer transition-all ${
-                  backend === 'local-acoustic'
-                    ? 'border-[#00ffcc] bg-[#00ffcc]/10 text-white'
-                    : 'border-[#262630] bg-[#14141a] text-[#888899] hover:border-[#444455]'
-                }`}
-              >
-                <div className="flex items-center gap-2 font-semibold text-xs mb-1 text-white">
-                  <Server className="w-4 h-4 text-[#00ffcc]" />
-                  <span>Acoustic VAD</span>
-                </div>
-                <p className="text-[11px] leading-tight text-[#9999aa]">
-                  Instant energy & pitch diarization. 100% offline, zero dependencies.
-                </p>
-              </div>
             </div>
           </div>
 
@@ -255,94 +213,80 @@ export const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({
               {/* Instructions */}
               <div className="text-[11px] text-[#777788] bg-[#14141c] p-2.5 rounded border border-[#222230] space-y-1">
                 <div className="font-semibold text-[#aaaaee]">How to start your local faster-whisper + diarization server:</div>
-                <div>1. Run: <code className="text-[#00ffcc]">pip install faster-whisper speechbrain scikit-learn</code></div>
-                <div>2. Double click <code className="text-[#00ffcc]">run_faster_whisper.bat</code> (or <code className="text-[#00ffcc]">python server_faster_whisper.py</code>).</div>
+                <div>1. Run: <code className="text-[#00ffcc]">pip install -r requirements.txt</code></div>
+                <div>2. Run <code className="text-[#00ffcc]">python server_faster_whisper.py</code> (or use <code className="text-[#00ffcc]">start.bat</code>).</div>
                 <div>3. Server runs 100% offline at http://127.0.0.1:8000 using your cached models.</div>
               </div>
             </div>
           )}
 
-          {/* Local Hugging Face Models Detected */}
-          <div className="p-3.5 rounded-lg bg-[#0e0e14] border border-[#222230] space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-mono uppercase tracking-wider text-[#9999aa]">
-                Detected Local Models in Hugging Face Hub
-              </span>
-              <span className="text-[10px] text-[#00ffcc] font-mono">100% Local / Offline</span>
+          {/* VAD tuning */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="text-xs font-mono text-[#9999aa]">VAD Min Silence (Turns)</label>
+              <span className="text-xs font-mono text-[#00ffcc]">{minSilenceMs} ms</span>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs">
-              <div className="p-2 rounded bg-[#14141d] border border-[#262638] flex items-center justify-between">
-                <div>
-                  <div className="font-semibold text-white">SpeechBrain ECAPA-TDNN</div>
-                  <div className="text-[10px] text-[#777788]">models--speechbrain--spkrec-ecapa-voxceleb</div>
-                </div>
-                <span className="px-1.5 py-0.5 rounded text-[10px] bg-[#00ffcc]/10 text-[#00ffcc] border border-[#00ffcc]/30">Diarizer</span>
-              </div>
-
-              <div className="p-2 rounded bg-[#14141d] border border-[#262638] flex items-center justify-between">
-                <div>
-                  <div className="font-semibold text-white">Pyannote Segmentation 3.0</div>
-                  <div className="text-[10px] text-[#777788]">models--pyannote--segmentation-3.0</div>
-                </div>
-                <span className="px-1.5 py-0.5 rounded text-[10px] bg-[#0099ff]/10 text-[#0099ff] border border-[#0099ff]/30">VAD / Turns</span>
-              </div>
-
-              <div className="p-2 rounded bg-[#14141d] border border-[#262638] flex items-center justify-between">
-                <div>
-                  <div className="font-semibold text-white">Systran faster-whisper Medium</div>
-                  <div className="text-[10px] text-[#777788]">models--Systran--faster-whisper-medium</div>
-                </div>
-                <span className="px-1.5 py-0.5 rounded text-[10px] bg-[#ffcc00]/10 text-[#ffcc00] border border-[#ffcc00]/30">ASR Primary</span>
-              </div>
-
-              <div className="p-2 rounded bg-[#14141d] border border-[#262638] flex items-center justify-between">
-                <div>
-                  <div className="font-semibold text-white">Sber GigaAM v3</div>
-                  <div className="text-[10px] text-[#777788]">models--ai-sage--GigaAM-v3</div>
-                </div>
-                <span className="px-1.5 py-0.5 rounded text-[10px] bg-[#a855f7]/10 text-[#a855f7] border border-[#a855f7]/30">Russian ASR</span>
-              </div>
+            <input
+              type="range"
+              min="150"
+              max="600"
+              step="25"
+              value={minSilenceMs}
+              onChange={(e) => setMinSilenceMs(parseInt(e.target.value, 10))}
+              className="w-full accent-[#00ffcc] cursor-pointer"
+            />
+            <div className="flex justify-between text-[10px] text-[#666677] mt-0.5">
+              <span>150ms (finer turns, more segments)</span>
+              <span>600ms (merged turns, fewer segments)</span>
             </div>
           </div>
 
-          {/* Diarization & VAD Tuning */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs font-mono text-[#9999aa] mb-1">Speaker Diarization Engine</label>
-              <select
-                value={diarizationEngine}
-                onChange={(e) => setDiarizationEngine(e.target.value as any)}
-                className="w-full px-3 py-2 bg-[#09090d] border border-[#333344] rounded-lg text-white text-xs focus:outline-none focus:border-[#00ffcc]"
-              >
-                <option value="speechbrain-ecapa">SpeechBrain ECAPA-TDNN (SOTA 192-dim)</option>
-                <option value="pyannote-segmentation">Pyannote Segmentation 3.0</option>
-                <option value="acoustic-cluster">Built-in Multi-Band Acoustic Diarizer</option>
-              </select>
-              <p className="text-[10px] text-[#777788] mt-1">
-                Distinguishes multiple male & female speakers with deep neural embeddings.
+          {backend === 'offline-transformers' && (
+            <div className="space-y-2">
+              <label className="block text-xs font-mono uppercase tracking-wider text-[#9999aa]">
+                Browser Model Path
+              </label>
+              <input
+                type="text"
+                value={localPath}
+                onChange={(e) => setLocalPath(e.target.value)}
+                placeholder="/models/"
+                className="w-full px-3 py-2 bg-[#09090d] border border-[#333344] rounded-lg text-white font-mono text-xs focus:outline-none focus:border-[#00ffcc] transition-colors"
+              />
+              <p className="text-[11px] text-[#777788]">
+                URL path served by this app (folder <code className="text-[#00ffcc]">public/models/</code>), e.g. <code className="text-[#00ffcc]">public/models/Xenova/whisper-base/</code>.
               </p>
             </div>
+          )}
 
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-xs font-mono text-[#9999aa]">VAD Min Silence (Turns)</label>
-                <span className="text-xs font-mono text-[#00ffcc]">{minSilenceMs} ms</span>
+          {/* Speaker count (Python backend) */}
+          {backend === 'local-faster-whisper' && (
+            <div className="grid grid-cols-2 gap-4 items-end">
+              <div>
+                <label className="block text-xs font-mono text-[#9999aa] mb-1">Max Speakers</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="12"
+                  value={maxSpeakers}
+                  onChange={(e) => setMaxSpeakers(Math.max(1, Math.min(12, parseInt(e.target.value, 10) || 1)))}
+                  className="w-full px-3 py-2 bg-[#09090d] border border-[#333344] rounded-lg text-white text-xs focus:outline-none focus:border-[#00ffcc]"
+                />
               </div>
-              <input
-                type="range"
-                min="150"
-                max="600"
-                step="25"
-                value={minSilenceMs}
-                onChange={(e) => setMinSilenceMs(parseInt(e.target.value, 10))}
-                className="w-full accent-[#00ffcc] cursor-pointer"
-              />
-              <div className="flex justify-between text-[10px] text-[#666677] mt-0.5">
-                <span>150ms (Finer turns ~117 segs)</span>
-                <span>600ms (Merged ~80 segs)</span>
-              </div>
+              <label className="flex items-center gap-2 text-xs text-[#cccccc] cursor-pointer pb-2">
+                <input
+                  type="checkbox"
+                  checked={exactSpeakers}
+                  onChange={(e) => setExactSpeakers(e.target.checked)}
+                  className="accent-[#00ffcc]"
+                />
+                <span>Exactly this many (skip auto-detect)</span>
+              </label>
+              <p className="col-span-2 text-[10px] text-[#777788] -mt-2">
+                Auto mode picks 1 to Max Speakers based on how clearly the voices separate. If it under-splits a conversation you know has N people, tick "Exactly".
+              </p>
             </div>
-          </div>
+          )}
 
           {/* Hardware & Inference Options */}
           <div className="grid grid-cols-2 gap-4">

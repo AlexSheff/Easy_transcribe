@@ -2,130 +2,91 @@
 
 ![Easy Transcriber Logo](assets/logo.png)
 
-**Easy TScribe** is a professional, 100% private, and fully offline suite for automated audio/video transcription, neural speaker diarization, voice identification, and Markdown document generation. 
-
-Everything runs strictly on your machine — zero cloud uploads, zero external API keys, and 100% data confidentiality.
-
----
-
-## ✨ Key Capabilities
-
-- 🔒 **100% Offline & Private** — Audio and transcripts never leave your machine (`HF_HUB_OFFLINE=1` enforced).
-- 🚀 **Unified Single-Click Launcher (`start.bat`)** — Automatically verifies Node.js, installs dependencies if needed, starts the background Whisper/diarization engine, creates the `transcripts/` folder, and launches the UI in your browser.
-- 📁 **Automatic Markdown Export to Project Folder** — Every completed audio/video transcription is automatically saved as a structured Markdown (`.md`) document inside the `./transcripts/` project folder.
-- 🗣️ **Neural Speaker Diarization** — Distinguishes speakers using acoustic embeddings and agglomerative cosine clustering with fundamental frequency ($F_0$) pitch tracking.
-- ⚡ **Batch Processing Queue** — Drag and drop multiple audio/video files at once (MP4, MKV, AVI, MOV, MP3, WAV, FLAC, M4A, OGG). Track progress per file with real-time status and progress indicators.
-- 📝 **Standard Clean Markdown Preset** — Generates standardized transcripts with full header metadata, speaker turn counts, timestamps, and dialogues.
-- 🎛️ **Audio Converter & Live Mic Recorder** — Built-in converter to standardized 16kHz mono WAV and live voice capture with real-time spectrum visualization.
-- 🖥️ **Modern Non-Overloaded UI** — Intuitive dashboard with 3 primary metric cards, system status bar, terminal logs, interactive playback scrubber, inline segment editor, and quick modal tools.
+Local audio/video transcription with speaker diarization and Markdown export.
+Recognition and diarization run on your machine with models from your Hugging Face cache.
+The UI makes **no requests to external hosts**: no CDN scripts, no web fonts, no model downloads.
 
 ---
 
-## 🚀 Quick Start (Windows)
+## What it does
 
-Simply double-click:
+- **Transcription** with [faster-whisper](https://github.com/SYSTRAN/faster-whisper): models `tiny`, `base`, `small`, `medium` (and any other `Systran/faster-whisper-*` model in your cache). Language auto-detect or fixed.
+- **Speaker diarization** with SpeechBrain ECAPA-TDNN embeddings + agglomerative clustering. Speakers are numbered by talk time (`Speaker 001` is the most active). Rename or merge them in the Speaker Manager.
+- **Batch queue**, in-browser media → 16 kHz WAV converter, microphone recorder, inline segment editor, audio scrubber.
+- **Export**: Markdown (several presets), SRT, JSON, plain text. Transcripts are also saved automatically to `./transcripts/`.
+- **Optional in-browser backend** (transformers.js, no Python). Advanced: you must place the model files in `public/models/`. It has **no diarization** (single speaker).
 
-```
-start.bat
-```
+### Known limitations
 
-The launcher will:
-1. Check for **Node.js** (prompts if missing).
-2. Install npm dependencies automatically on first run.
-3. Ensure the **`transcripts/`** folder exists in the project root.
-4. Auto-detect Python and launch the local **`faster-whisper` + Diarization** daemon in the background.
-5. Open **`http://localhost:3000`** in your default web browser and start the application.
+- Diarization quality depends on the ECAPA model being present. Without it the server falls back to a weak acoustic diarizer and `/health` reports `acoustic-multifeature`. Overlapping speech is not handled.
+- The number of speakers is chosen automatically between 1 and **Max Speakers** (default 3, set in Engine Settings) using a silhouette score on the longer segments; it can never exceed the maximum. If it under-splits a conversation with a known number of people, tick "Exactly this many". If it splits a single speaker, raise `EASY_TSCRIBE_MIN_SILHOUETTE` (default `0.08`).
+- Speaker gender is **not** guessed. Semantic topic clustering was removed because it was not real.
+- Diarization of very short segments (< 0.6 s) is inherited from neighbouring segments.
 
 ---
 
-## 💻 Manual Launch (Cross-Platform: Windows / Linux / macOS)
+## Setup
+
+Requirements: Node.js 18+, Python 3.10+, and models in your Hugging Face cache
+(`%USERPROFILE%\.cache\huggingface\hub` on Windows, `~/.cache/huggingface/hub` elsewhere; override with `HF_HUB_CACHE`).
 
 ```bash
-# 1. Install dependencies
 npm install
+pip install -r requirements.txt
 
-# 2. (Optional) Run the local Python faster-whisper daemon
-python server_faster_whisper.py
+# terminal 1: local engine (127.0.0.1:8000)
+python server_faster_whisper.py            # default model: medium
+python server_faster_whisper.py small      # or another cached model / a model directory
 
-# 3. Start the application
-npm run dev
+# terminal 2: UI
+npm run dev                                # http://localhost:3000
 ```
 
-Open `http://localhost:3000` in your web browser.
+**Windows:** double-click `start.bat` (checks Node and Python packages, starts both).
 
----
+The model dropdown in the UI selects which cached faster-whisper model the server uses per request.
+`GET http://127.0.0.1:8000/health` lists the models the server found.
 
-## 📂 Auto-Saved Output Format
+### Server configuration (environment variables)
 
-Transcripts are automatically written to `./transcripts/transcript_<filename>.md`:
+| Variable | Default | Purpose |
+|---|---|---|
+| `HF_HUB_CACHE` / `HF_HOME` | `~/.cache/huggingface/hub` | Where cached models live |
+| `EASY_TSCRIBE_ORIGINS` | – | Extra allowed browser origins (comma separated) |
+| `EASY_TSCRIBE_MAX_UPLOAD_MB` | `1024` | Upload size limit |
+| `EASY_TSCRIBE_MAX_SPEAKERS` | `3` | Default upper bound on speakers (the UI setting overrides it) |
+| `EASY_TSCRIBE_MIN_SILHOUETTE` | `0.08` | How clearly voices must separate before splitting into more than one speaker |
 
-```markdown
-# Transcript: 2026-09-04 02-17-31.mp4
-Date: 2026-09-20 21:38:42
-Total Segments: 117
+## Security model
 
-## Speakers
+- The Python server binds to `127.0.0.1` only, accepts browser requests only from `http://localhost:3000` / `http://127.0.0.1:3000`, and rejects non-loopback `Host` headers (DNS-rebinding protection).
+- The Vite dev server listens on `localhost` only.
+- `transcripts/` is git-ignored. Do not commit recordings or transcripts.
 
-- Male Speaker 001: 84 segment(s)
-- Male Speaker 002: 31 segment(s)
-- Male Speaker 003: 2 segment(s)
+## Development
 
-## Transcript
-
-**[00:02] Male Speaker 001:** Initial dialogue statement recorded here.
-**[00:15] Male Speaker 002:** Response from second speaker with detected turn-taking.
+```bash
+npm run lint      # TypeScript check
+npm run build     # production build
+pip install -r requirements-dev.txt
+npm test          # server tests (use a fake Whisper model, no GPU or models needed)
 ```
 
----
-
-## 📂 Project Structure
+## Project structure
 
 ```
 Easy_transcribe/
-├── assets/
-│   └── logo.png                  # Application branding
-├── transcripts/                  # Auto-saved Markdown transcripts (.md)
+├── server_faster_whisper.py   # local engine: faster-whisper + ECAPA diarization + transcript saving
+├── tests/test_server.py       # server tests
+├── scripts/copy-ort-wasm.js   # copies ONNX WASM locally for the in-browser backend
 ├── src/
-│   ├── components/
-│   │   ├── Sidebar.tsx           # Model selector, primary actions, and status
-│   │   ├── StatCards.tsx         # Dashboard metrics (Queue, Processed, Active Model)
-│   │   ├── StatusBox.tsx         # Operation status & progress bar
-│   │   ├── TerminalOutput.tsx    # Live system console log stream
-│   │   ├── TranscriptView.tsx    # Audio player, timestamped turns & inline editor
-│   │   ├── BatchQueuePanel.tsx   # Batch processing queue and batch export
-│   │   ├── ConverterModal.tsx    # Media-to-WAV converter
-│   │   ├── RecorderModal.tsx     # Microphone capture with VAD & live spectrum
-│   │   ├── SpeakerManagerModal.tsx # Speaker database, rename & merge tools
-│   │   ├── SemanticViewModal.tsx # Thematic topic clusters
-│   │   ├── ModelSettingsModal.tsx # Whisper & VAD silence thresholds
-│   │   └── ExportModal.tsx       # Standard, Obsidian, SRT, and JSON exports
-│   ├── services/
-│   │   ├── audioConverter.ts     # In-browser Web Audio API decoding and WAV encoder
-│   │   ├── pitchAnalyzer.ts      # Autocorrelation F0 pitch analysis
-│   │   ├── exporter.ts           # Standard & Obsidian Markdown generators
-│   │   └── transcriptionEngine.ts # Offline pipeline orchestrator & Python bridge
-│   ├── types.ts                  # Shared TypeScript types
-│   ├── App.tsx                   # Main application layout and state management
-│   ├── main.tsx                  # React entry point
-│   └── index.css                 # Global styling
-├── server_faster_whisper.py      # Local faster-whisper & Pyannote diarization server
-├── start.bat                     # Single master launcher for Windows
-├── package.json                  # Scripts and dependencies
-├── vite.config.ts                # Vite config with auto-save markdown plugin
-└── README.md                     # Documentation
+│   ├── App.tsx                # app state and layout
+│   ├── components/            # Sidebar, TranscriptView, BatchQueuePanel, modals...
+│   └── services/              # transcriptionEngine, audioConverter, exporter, whisperLoader
+├── start.bat / run.bat / install.bat
+└── requirements.txt
 ```
 
----
+## License
 
-## 🛡️ Privacy Guarantee
-
-- **No Remote Network Calls**: Models operate from local disk caches (`%USERPROFILE%\.cache\huggingface\hub`).
-- **No Cloud Dependencies**: Audio conversion, VAD, transcription, and diarization run entirely on local compute.
-- **Local Persistence**: Markdown files are saved directly into the local `transcripts/` directory.
-
----
-
-## 📄 License
-
-MIT License. Designed for high productivity and privacy-first transcription.
-
+MIT

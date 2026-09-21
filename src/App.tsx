@@ -11,7 +11,6 @@ import { BatchQueuePanel } from './components/BatchQueuePanel';
 import { ConverterModal } from './components/ConverterModal';
 import { RecorderModal } from './components/RecorderModal';
 import { SpeakerManagerModal } from './components/SpeakerManagerModal';
-import { SemanticViewModal } from './components/SemanticViewModal';
 import { ExportModal } from './components/ExportModal';
 import { ModelSettingsModal } from './components/ModelSettingsModal';
 import { Upload, Sparkles, SlidersHorizontal, Eye, AlertTriangle, X, FileText, Layers, Download, Sliders } from 'lucide-react';
@@ -29,13 +28,14 @@ export const App: React.FC = () => {
 
   // Engine configuration with local Systran model path and strict offline enforcement
   const [engineConfig, setEngineConfig] = useState<LocalEngineConfig>({
-    localModelPath: 'C:\\Users\\admin_fdr\\.cache\\huggingface\\hub\\models--Systran--faster-whisper-medium\\snapshots\\08e178d48790749d25932bbc082711ddcfdfbc4f',
+    localModelPath: '/models/',
     backend: 'local-faster-whisper',
     localServerUrl: 'http://127.0.0.1:8000',
     blockRemoteDownloads: true,
     device: 'auto',
     beamSize: 5,
-    vadSensitivity: 0.5,
+    maxSpeakers: 3,
+    exactSpeakers: false,
   });
 
   const [logs, setLogs] = useState<LogEntry[]>([
@@ -49,7 +49,7 @@ export const App: React.FC = () => {
       id: 'init_2',
       timestamp: new Date().toLocaleTimeString(),
       type: 'INFO',
-      message: 'Local model target: Systran faster-whisper-medium. Remote downloads: BLOCKED.'
+      message: 'Backend: local faster-whisper server (models from your Hugging Face cache). Remote downloads: BLOCKED.'
     }
   ]);
 
@@ -63,7 +63,6 @@ export const App: React.FC = () => {
   const [isConverterOpen, setIsConverterOpen] = useState(false);
   const [isRecorderOpen, setIsRecorderOpen] = useState(false);
   const [isSpeakersOpen, setIsSpeakersOpen] = useState(false);
-  const [isSemanticOpen, setIsSemanticOpen] = useState(false);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isModelSettingsOpen, setIsModelSettingsOpen] = useState(false);
 
@@ -160,11 +159,7 @@ export const App: React.FC = () => {
           file,
           {
             modelSize: model,
-            diarizationEnabled: true,
-            voiceFingerprintEnabled: true,
-            semanticClusteringEnabled: true,
             language: 'auto',
-            fingerprintThreshold: 0.65,
             engineConfig,
           },
           (prog, stage) => {
@@ -251,49 +246,27 @@ export const App: React.FC = () => {
     }
   };
 
-  // Automatically save markdown file directly to project's transcripts folder
+  // Save the Markdown transcript into ./transcripts via the local Python server.
   const saveTranscriptMarkdownToServer = async (fileData: ProcessedFile, originalName: string) => {
+    if (engineConfig.backend !== 'local-faster-whisper' || !engineConfig.localServerUrl) {
+      addLog('INFO', '[AUTO-SAVE] Skipped: auto-save needs the local Python server. Use Export to download the file.');
+      return;
+    }
+    const mdContent = generateMarkdownExport(fileData, fileData.speakers, { preset: 'standard' });
+    const bName = originalName.replace(/\.[^/.]+$/, '');
+    const cleanName = `transcript_${bName}.md`;
     try {
-      const mdContent = generateMarkdownExport(fileData, fileData.speakers, { preset: 'standard' });
-      const bName = originalName.replace(/\.[^/.]+$/, '');
-      const cleanName = `transcript_${bName}.md`;
-
-      let autoSaved = false;
-
-      // 1. Try local dev server endpoint
-      try {
-        const res = await fetch('/api/save-markdown', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ filename: cleanName, content: mdContent })
-        });
-        if (res.ok) {
-          const data = await res.json();
-          addLog('DONE', `[AUTO-SAVE] Written to project folder: ${data.relativePath || 'transcripts/' + cleanName}`);
-          autoSaved = true;
-        }
-      } catch {
-        // Fallback to python server if running
-      }
-
-      // 2. If python backend is running, also ensure saved there
-      if (!autoSaved && engineConfig.localServerUrl) {
-        try {
-          const res = await fetch(`${engineConfig.localServerUrl.replace(/\/+$/, '')}/api/save-markdown`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename: cleanName, content: mdContent })
-          });
-          if (res.ok) {
-            const data = await res.json();
-            addLog('DONE', `[AUTO-SAVE] Written to project folder: ${data.relativePath || 'transcripts/' + cleanName}`);
-          }
-        } catch {
-          // ignore
-        }
-      }
-    } catch (saveErr) {
-      console.warn('Auto-save error:', saveErr);
+      const res = await fetch(`${engineConfig.localServerUrl.replace(/\/+$/, '')}/api/save-markdown`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: cleanName, content: mdContent })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      addLog('DONE', `[AUTO-SAVE] Written to project folder: ${data.relativePath || 'transcripts/' + cleanName}`);
+    } catch (saveErr: unknown) {
+      const msg = saveErr instanceof Error ? saveErr.message : String(saveErr);
+      addLog('ERROR', `[AUTO-SAVE] Could not save ${cleanName}: ${msg}. Use Export to download the file.`);
     }
   };
 
@@ -428,7 +401,6 @@ export const App: React.FC = () => {
         onRecordClick={() => setIsRecorderOpen(true)}
         onOpenModelSettings={() => setIsModelSettingsOpen(true)}
         onOpenSpeakers={() => setIsSpeakersOpen(true)}
-        onOpenSemantic={() => setIsSemanticOpen(true)}
         onOpenExport={() => setIsExportOpen(true)}
         hasActiveTranscript={Boolean(activeFile)}
         isProcessing={isProcessing}
@@ -636,7 +608,6 @@ export const App: React.FC = () => {
               file={activeFile}
               speakers={speakers}
               onOpenSpeakers={() => setIsSpeakersOpen(true)}
-              onOpenSemantic={() => setIsSemanticOpen(true)}
               onOpenExport={() => setIsExportOpen(true)}
               onUpdateSegmentText={handleUpdateSegmentText}
             />
@@ -682,14 +653,6 @@ export const App: React.FC = () => {
 
       {activeFile && (
         <>
-          <SemanticViewModal
-            isOpen={isSemanticOpen}
-            onClose={() => setIsSemanticOpen(false)}
-            clusters={activeFile.clusters}
-            segments={activeFile.segments}
-            speakers={speakers}
-          />
-
           <ExportModal
             isOpen={isExportOpen}
             onClose={() => setIsExportOpen(false)}

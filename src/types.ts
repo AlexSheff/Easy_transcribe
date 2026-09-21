@@ -1,4 +1,4 @@
-export type WhisperModelSize = 'tiny' | 'base' | 'small' | 'medium' | 'large-v3';
+export type WhisperModelSize = 'tiny' | 'base' | 'small' | 'medium';
 
 export type GenderType = 'Male' | 'Female' | 'Unknown';
 
@@ -6,7 +6,7 @@ export interface SpeakerMetadata {
   id: string;
   name: string;
   gender: GenderType;
-  confidence: number;
+  confidence?: number;
   pitchF0?: number;
   sampleCount: number;
   color: string;
@@ -27,16 +27,9 @@ export interface TranscriptSegment {
   speakerId: string;
   gender: GenderType;
   uncertain: boolean;
-  confidence: number;
+  /** Average token probability (0-1) reported by Whisper; absent if the backend gives none. */
+  confidence?: number;
   words?: WordToken[];
-  clusterId?: number;
-}
-
-export interface SemanticCluster {
-  clusterId: number;
-  topic: string;
-  summary: string;
-  segmentIds: string[];
 }
 
 export interface ProcessedFile {
@@ -48,7 +41,6 @@ export interface ProcessedFile {
   audioUrl?: string;
   segments: TranscriptSegment[];
   speakers: Record<string, SpeakerMetadata>;
-  clusters: SemanticCluster[];
   processedAt: string;
   language: string;
   modelUsed: WhisperModelSize;
@@ -75,26 +67,23 @@ export interface ConversionItem {
 
 export type MarkdownPreset = 'standard' | 'obsidian' | 'meeting' | 'clean' | 'timestamps';
 
-export type EngineBackendType = 'local-faster-whisper' | 'offline-transformers' | 'local-acoustic';
-
-export type DiarizationEngineType = 'speechbrain-ecapa' | 'pyannote-segmentation' | 'acoustic-cluster';
-
-export type AsrEngineType = 'faster-whisper' | 'gigaam-v3';
+export type EngineBackendType = 'local-faster-whisper' | 'offline-transformers';
 
 export interface LocalEngineConfig {
   backend: EngineBackendType;
-  localModelPath: string;
+  /** Python server URL (faster-whisper backend). */
   localServerUrl?: string;
+  /** In-browser backend only: URL path under which model folders are served (default /models/). */
+  localModelPath?: string;
+  /** In-browser backend only: refuse to download model weights from the network. */
   blockRemoteDownloads: boolean;
   device?: 'cuda' | 'cpu' | 'auto';
-  vadSensitivity?: number;
   minSilenceMs?: number;
   beamSize?: number;
-  temperature?: number;
-  language?: string;
-  diarizationEngine?: DiarizationEngineType;
-  asrEngine?: AsrEngineType;
-  hfCacheDir?: string;
+  /** Upper bound on detected speakers (Python backend). */
+  maxSpeakers?: number;
+  /** If true, force exactly `maxSpeakers` speakers instead of auto-detecting up to that number. */
+  exactSpeakers?: boolean;
 }
 
 export interface BatchFileItem {

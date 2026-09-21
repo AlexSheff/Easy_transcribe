@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { SpeakerMetadata, GenderType } from '../types';
+import { SpeakerMetadata } from '../types';
 import { X, User, Sliders, Merge, Trash2, Check } from 'lucide-react';
 
 interface SpeakerManagerModalProps {
@@ -21,7 +21,6 @@ export const SpeakerManagerModal: React.FC<SpeakerManagerModalProps> = ({
 }) => {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
-  const [editGender, setEditGender] = useState<GenderType>('Unknown');
   
   const [mergeSource, setMergeSource] = useState<string>('');
   const [mergeTarget, setMergeTarget] = useState<string>('');
@@ -33,11 +32,10 @@ export const SpeakerManagerModal: React.FC<SpeakerManagerModalProps> = ({
   const startEdit = (spk: SpeakerMetadata) => {
     setEditingId(spk.id);
     setEditName(spk.name);
-    setEditGender(spk.gender);
   };
 
   const saveEdit = (id: string) => {
-    onUpdateSpeaker(id, { name: editName, gender: editGender });
+    onUpdateSpeaker(id, { name: editName });
     setEditingId(null);
   };
 
@@ -57,7 +55,7 @@ export const SpeakerManagerModal: React.FC<SpeakerManagerModalProps> = ({
             <Sliders className="w-5 h-5 text-[#00ffcc]" />
             <div>
               <h2 className="text-base font-bold text-white tracking-wide">VOICE DATABASE · SPEAKER ROSTER</h2>
-              <p className="text-xs text-[#666666]">Per-session ECAPA-TDNN & F0 pitch clustering management</p>
+              <p className="text-xs text-[#666666]">Rename and merge speakers detected in this session</p>
             </div>
           </div>
           <button
@@ -103,15 +101,6 @@ export const SpeakerManagerModal: React.FC<SpeakerManagerModalProps> = ({
                             onChange={(e) => setEditName(e.target.value)}
                             className="bg-[#111] border border-[#00ffcc] rounded px-2 py-1 text-xs text-white focus:outline-none flex-1"
                           />
-                          <select
-                            value={editGender}
-                            onChange={(e) => setEditGender(e.target.value as GenderType)}
-                            className="bg-[#111] border border-[#333] rounded px-2 py-1 text-xs text-white"
-                          >
-                            <option value="Male">Male</option>
-                            <option value="Female">Female</option>
-                            <option value="Unknown">Unknown</option>
-                          </select>
                           <button
                             onClick={() => saveEdit(spk.id)}
                             className="bg-[#00ffcc] text-black px-2 py-1 rounded text-xs font-bold cursor-pointer"
@@ -126,9 +115,8 @@ export const SpeakerManagerModal: React.FC<SpeakerManagerModalProps> = ({
                             <span className="text-[10px] text-[#666666] font-mono">({spk.id})</span>
                           </div>
                           <div className="text-[11px] text-[#888888] font-mono mt-0.5 space-x-2">
-                            <span>Gender: <strong className="text-[#cccccc]">{spk.gender}</strong></span>
-                            {spk.pitchF0 && <span>· F0: <strong className="text-[#00ffcc]">{spk.pitchF0}Hz</strong></span>}
-                            <span>· Turns: {spk.sampleCount}</span>
+                            {spk.pitchF0 ? <span>F0: <strong className="text-[#00ffcc]">{spk.pitchF0}Hz</strong> ·</span> : null}
+                            <span>Turns: {spk.sampleCount}</span>
                           </div>
                         </div>
                       )}

@@ -6,7 +6,6 @@ export interface MarkdownExportOptions {
   preset?: MarkdownPreset;
   includePitch?: boolean;
   includeTimestamps?: boolean;
-  includeClusters?: boolean;
   includeFrontmatter?: boolean;
 }
 
@@ -40,7 +39,6 @@ export function generateMarkdownExport(
   const preset = options.preset || 'standard';
   const includePitch = options.includePitch !== false;
   const includeTimestamps = options.includeTimestamps !== false;
-  const includeClusters = options.includeClusters !== false;
   const lines: string[] = [];
 
   const baseName = file.filename.replace(/\.[^/.]+$/, '');
@@ -152,27 +150,17 @@ export function generateMarkdownExport(
     lines.push('');
     lines.push('## 👥 Speakers');
     lines.push('');
-    lines.push('| Speaker | Gender / Role | Speech Time | Share | Voice Pitch (F0) |');
-    lines.push('|:---|:---|:---|:---|:---|');
+    lines.push('| Speaker | Speech Time | Share | Voice Pitch (F0) |');
+    lines.push('|:---|:---|:---|:---|');
     Object.values(speakers).forEach((spk) => {
       const stats = speakerStats[spk.id] || { seconds: 0, segments: 0 };
       const dur = formatTimeSeconds(stats.seconds);
       const share = file.duration > 0 ? ((stats.seconds / file.duration) * 100).toFixed(1) : '0.0';
       const f0 = spk.pitchF0 ? `~${spk.pitchF0} Hz` : '—';
-      lines.push(`| **${spk.name}** | ${spk.gender} | \`${dur}\` | ${share}% | ${f0} |`);
+      lines.push(`| **${spk.name}** | \`${dur}\` | ${share}% | ${f0} |`);
     });
     lines.push('');
 
-    // Semantic topics if available
-    if (includeClusters && file.clusters && file.clusters.length > 0) {
-      lines.push('## 📌 Topics & Semantic Clusters');
-      lines.push('');
-      file.clusters.forEach((c) => {
-        lines.push(`> [!abstract] Topic ${c.clusterId}: ${c.topic}`);
-        lines.push(`> *${c.summary}*`);
-        lines.push('');
-      });
-    }
 
     lines.push('## 💬 Transcript');
     lines.push('');
@@ -203,25 +191,14 @@ export function generateMarkdownExport(
     const stats = speakerStats[spk.id] || { seconds: 0, segments: 0 };
     const dur = formatTimeSeconds(stats.seconds);
     const share = file.duration > 0 ? ((stats.seconds / file.duration) * 100).toFixed(1) : '0';
-    const f0Info = includePitch && spk.pitchF0 ? ` (F0: ${spk.pitchF0} Hz, Gender: ${spk.gender})` : '';
+    const f0Info = includePitch && spk.pitchF0 ? ` (F0: ${spk.pitchF0} Hz)` : '';
     lines.push(`- **${spk.name}**${f0Info} — ${dur} speech (${share}% share, ${stats.segments} utterances)`);
   });
   lines.push('');
 
-  if (includeClusters && file.clusters && file.clusters.length > 0) {
-    lines.push('---');
-    lines.push('');
-    lines.push('### 2. Semantic Discussion Topics');
-    file.clusters.forEach((c) => {
-      lines.push(`- **Topic ${c.clusterId}: ${c.topic}**`);
-      lines.push(`  *${c.summary}*`);
-    });
-    lines.push('');
-  }
-
   lines.push('---');
   lines.push('');
-  lines.push('### 3. Full Verbatim Transcript');
+  lines.push('### 2. Full Verbatim Transcript');
   lines.push('');
   file.segments.forEach((seg) => {
     const spk = speakers[seg.speakerId];
@@ -310,7 +287,6 @@ export function generateJsonExport(file: ProcessedFile, speakers: Record<string,
       },
       speakers,
       segments: file.segments,
-      clusters: file.clusters,
     },
     null,
     2

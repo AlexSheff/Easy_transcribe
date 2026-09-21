@@ -11,7 +11,6 @@ import {
   User, 
   Sliders, 
   Download, 
-  Layers, 
   Check, 
   Edit3,
   FileText
@@ -21,7 +20,6 @@ interface TranscriptViewProps {
   file: ProcessedFile;
   speakers: Record<string, SpeakerMetadata>;
   onOpenSpeakers: () => void;
-  onOpenSemantic: () => void;
   onOpenExport: () => void;
   onUpdateSegmentText: (segmentId: string, newText: string) => void;
 }
@@ -30,7 +28,6 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
   file,
   speakers,
   onOpenSpeakers,
-  onOpenSemantic,
   onOpenExport,
   onUpdateSegmentText,
 }) => {
@@ -167,16 +164,6 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
             <span>Speakers ({Object.keys(speakers).length})</span>
           </button>
 
-          {file.clusters && file.clusters.length > 0 && (
-            <button
-              onClick={onOpenSemantic}
-              className="bg-[#1c1c1c] hover:bg-[#282828] border border-[#333333] text-xs font-medium text-[#cccccc] hover:text-white px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition cursor-pointer"
-            >
-              <Layers className="w-3.5 h-3.5 text-[#ffcc00]" />
-              <span>Topics ({file.clusters.length})</span>
-            </button>
-          )}
-
           <button
             onClick={onOpenExport}
             className="bg-gradient-to-r from-[#00ffcc] to-[#0099ff] hover:brightness-110 text-black font-extrabold text-xs px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition shadow cursor-pointer"
@@ -253,7 +240,6 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
             const spk = speakers[seg.speakerId];
             const spkName = spk?.name || seg.speakerId;
             const spkColor = spk?.color || '#00ffcc';
-            const gender = spk?.gender || seg.gender;
 
             return (
               <div
@@ -286,19 +272,6 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
                       <User className="w-3 h-3" />
                       <span>{spkName}</span>
                     </div>
-
-                    {/* Gender badge from F0 pitch analysis */}
-                    <span 
-                      className={`text-[10px] uppercase font-mono px-1.5 py-0.2 rounded ${
-                        gender === 'Male' 
-                          ? 'bg-blue-950/70 text-blue-300 border border-blue-800/40' 
-                          : gender === 'Female'
-                          ? 'bg-pink-950/70 text-pink-300 border border-pink-800/40'
-                          : 'bg-neutral-800 text-neutral-400'
-                      }`}
-                    >
-                      {gender}
-                    </span>
 
                     {spk?.pitchF0 && (
                       <span className="text-[10px] font-mono text-[#666666]">

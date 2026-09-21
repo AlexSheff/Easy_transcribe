@@ -1,6 +1,7 @@
 {
   "name": "Easy TScribe",
-  "description": "High-accuracy audio and video transcription, speaker diarization, voice fingerprinting, and semantic clustering node.",
-  "requestFramePermissions": ["microphone"],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "description": "Offline audio/video transcription with speaker diarization (local faster-whisper + SpeechBrain).",
+  "requestFramePermissions": [
+    "microphone"
+  ]
 }
