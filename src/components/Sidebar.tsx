@@ -5,10 +5,8 @@ import {
   FolderOpen, 
   RefreshCw, 
   Mic, 
-  Sparkles, 
   Sliders, 
-  Download, 
-  Radio
+  Download
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -144,7 +142,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
             <div className="font-mono text-[11px] text-white truncate flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-[#00ffcc] shrink-0"></span>
-              <span className="truncate">./transcripts/*.md</span>
+              <span className="truncate">./outputs/ · ./transcripts/</span>
             </div>
           </div>
         </div>
@@ -189,7 +187,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-1.5 text-xs text-[#00ffcc] font-bold">
               <Cpu className="w-3.5 h-3.5" />
-              <span>ENGINE: WebGPU</span>
+              <span>{engineBackend === 'local-faster-whisper' ? 'ENGINE: Faster-Whisper' : 'ENGINE: WebGPU / WASM'}</span>
             </div>
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00ffcc] opacity-75"></span>
@@ -197,8 +195,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </span>
           </div>
           <div className="text-[11px] text-[#888888] font-mono flex items-center justify-between">
-            <span>Hardware:</span>
-            <span className="text-[#cccccc]">CUDA / Wasm SIMD</span>
+            <span>Mode:</span>
+            <span className="text-[#cccccc]">{engineBackend === 'local-faster-whisper' ? 'Local Python + ECAPA' : 'Browser ONNX'}</span>
           </div>
           <div className="text-[11px] text-[#888888] font-mono flex items-center justify-between">
             <span>Memory:</span>

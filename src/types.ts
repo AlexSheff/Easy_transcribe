@@ -84,6 +84,8 @@ export interface LocalEngineConfig {
   maxSpeakers?: number;
   /** If true, force exactly `maxSpeakers` speakers instead of auto-detecting up to that number. */
   exactSpeakers?: boolean;
+  /** Skip files that already have a generated transcript in outputs/ or transcripts/. */
+  skipExisting?: boolean;
 }
 
 export interface BatchFileItem {
@@ -91,10 +93,11 @@ export interface BatchFileItem {
   file: File;
   name: string;
   size: number;
-  status: 'queued' | 'processing' | 'completed' | 'error';
+  status: 'queued' | 'checking' | 'processing' | 'completed' | 'skipped' | 'error';
   progress: number;
   stageMessage?: string;
+  existingPath?: string;
+  force?: boolean;
   error?: string;
   result?: ProcessedFile;
 }
-

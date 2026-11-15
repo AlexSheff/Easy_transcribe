@@ -9,6 +9,15 @@ export interface MarkdownExportOptions {
   includeFrontmatter?: boolean;
 }
 
+export function sanitizeTranscriptBaseName(filename: string): string {
+  const withoutExt = filename.replace(/\.[^/.]+$/, '');
+  const cleaned = Array.from(withoutExt)
+    .map((c) => (/[\p{L}\p{N}._\- ]/u.test(c) ? c : '_'))
+    .join('')
+    .replace(/^[ .]+|[ .]+$/g, '');
+  return (cleaned || 'transcript').slice(0, 140);
+}
+
 export function formatTimeSeconds(seconds: number): string {
   const safeSec = Math.max(0, isFinite(seconds) ? Math.floor(seconds) : 0);
   const m = Math.floor(safeSec / 60);
@@ -242,7 +251,7 @@ export function generateMasterMarkdownExport(
   lines.push('## 📑 Table of Contents');
   lines.push('');
   files.forEach((f, idx) => {
-    const anchor = f.filename.toLowerCase().replace(/[^a-z0-9]/gi, '-');
+    const anchor = f.filename.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '') || `file-${idx + 1}`;
     lines.push(`${idx + 1}. [${f.filename}](#${anchor}) — \`${formatTimeSeconds(f.duration)}\` (${f.segments.length} segments)`);
   });
   lines.push('');

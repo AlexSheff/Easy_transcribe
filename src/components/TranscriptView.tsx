@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ProcessedFile, SpeakerMetadata, TranscriptSegment } from '../types';
-import { formatTimeSeconds, generateMarkdownExport } from '../services/exporter';
+import { formatTimeSeconds, generateMarkdownExport, downloadTextFile, sanitizeTranscriptBaseName } from '../services/exporter';
 import { 
   Play, 
   Pause, 
@@ -39,6 +39,17 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
   const [editText, setEditText] = useState('');
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    setIsPlaying(false);
+    setCurrentTime(0);
+    setEditingSegId(null);
+    setEditText('');
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
+  }, [file.id]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -113,16 +124,8 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
 
   const handleDirectDownloadMd = () => {
     const mdContent = generateMarkdownExport(file, speakers);
-    const blob = new Blob([mdContent], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    const baseName = file.filename.replace(/\.[^/.]+$/, '');
-    a.href = url;
-    a.download = `transcript_${baseName}.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const baseName = sanitizeTranscriptBaseName(file.filename);
+    downloadTextFile(mdContent, `transcript_${baseName}.md`, 'text/markdown;charset=utf-8');
   };
 
   return (

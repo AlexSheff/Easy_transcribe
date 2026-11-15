@@ -7,9 +7,10 @@ import {
   generateSrtExport, 
   generatePlainTextExport, 
   downloadTextFile,
+  sanitizeTranscriptBaseName,
   MarkdownPreset
 } from '../services/exporter';
-import { X, Download, Copy, Check, FileText, Code, AlignLeft, Subtitles, Layers, FileCode } from 'lucide-react';
+import { X, Download, Copy, Check, FileText, Code, AlignLeft, Subtitles, Layers } from 'lucide-react';
 
 interface ExportModalProps {
   isOpen: boolean;
@@ -38,7 +39,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   let filename = '';
   let mimeType = 'text/plain';
 
-  const baseName = file.filename.replace(/\.[^/.]+$/, '');
+  const baseName = sanitizeTranscriptBaseName(file.filename);
 
   switch (format) {
     case 'md':
@@ -63,10 +64,14 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       break;
   }
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(content);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* ignore clipboard permission errors */
+    }
   };
 
   const handleDownload = () => {
@@ -252,6 +257,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               </div>
             </div>
             <div className="text-[#666666] font-mono text-[11px]">
+              {mdPreset === 'standard' && 'Header + Speakers List + Timecoded Transcript'}
               {mdPreset === 'obsidian' && 'YAML Frontmatter + Tags + Callout Cards'}
               {mdPreset === 'meeting' && 'Speaker Chronometry + Verbatim Protocol'}
               {mdPreset === 'clean' && 'Minimalist Dialogue for Quick Sharing'}

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Mic, Square, Play, ArrowRight, Volume2 } from 'lucide-react';
+import { X, Mic, Square, ArrowRight, AlertCircle } from 'lucide-react';
 
 interface RecorderModalProps {
   isOpen: boolean;
@@ -20,6 +20,7 @@ export const RecorderModal: React.FC<RecorderModalProps> = ({
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [liveTranscript, setLiveTranscript] = useState<string[]>([]);
   const [vadActive, setVadActive] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
@@ -34,14 +35,21 @@ export const RecorderModal: React.FC<RecorderModalProps> = ({
 
   useEffect(() => {
     if (!isOpen) {
-      stopRecording();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        stopRecording();
+      }
+      setErrorMsg(null);
       if (audioUrlRef.current) {
         URL.revokeObjectURL(audioUrlRef.current);
         audioUrlRef.current = null;
       }
+      setAudioUrl(null);
+      setRecordedBlob(null);
     }
     return () => {
-      stopRecording();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        stopRecording();
+      }
       if (audioUrlRef.current) {
         URL.revokeObjectURL(audioUrlRef.current);
         audioUrlRef.current = null;
@@ -51,6 +59,7 @@ export const RecorderModal: React.FC<RecorderModalProps> = ({
 
   const startRecording = async () => {
     try {
+      setErrorMsg(null);
       audioChunksRef.current = [];
       setLiveTranscript([]);
       if (audioUrlRef.current) {
@@ -152,7 +161,7 @@ export const RecorderModal: React.FC<RecorderModalProps> = ({
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       onLog('ERROR', `Microphone access error: ${msg}`);
-      alert('Could not access microphone. Please ensure microphone permissions are granted.');
+      setErrorMsg('Could not access microphone. Please ensure microphone permissions are granted.');
     }
   };
 
@@ -232,7 +241,9 @@ export const RecorderModal: React.FC<RecorderModalProps> = ({
   const handleSendToTranscribe = () => {
     if (!recordedBlob) return;
     const now = new Date().toISOString().replace(/[:.]/g, '-');
-    const file = new File([recordedBlob], `mic_recording_${now}.wav`, { type: 'audio/wav' });
+    const mime = recordedBlob.type || 'audio/webm';
+    const ext = mime.includes('mp4') ? 'm4a' : mime.includes('ogg') ? 'ogg' : 'webm';
+    const file = new File([recordedBlob], `mic_recording_${now}.${ext}`, { type: mime });
     onRecordingComplete(file);
     onClose();
   };
@@ -309,6 +320,13 @@ export const RecorderModal: React.FC<RecorderModalProps> = ({
           <div className="text-xs font-mono text-center text-[#aaaaaa]">
             {isRecording ? 'Capturing live microphone stream...' : recordedBlob ? 'Recording captured.' : 'Click to start recording microphone.'}
           </div>
+
+          {errorMsg && (
+            <div className="w-full bg-[#240d0d] border border-[#ff4444]/60 rounded-lg p-3 text-xs font-mono text-[#ffcccc] flex items-center space-x-2">
+              <AlertCircle className="w-4 h-4 text-[#ff4444] shrink-0" />
+              <span>{errorMsg}</span>
+            </div>
+          )}
 
           {/* Live Transcript Stream */}
           {liveTranscript.length > 0 && (

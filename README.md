@@ -13,7 +13,7 @@ The UI makes **no requests to external hosts**: no CDN scripts, no web fonts, no
 - **Transcription** with [faster-whisper](https://github.com/SYSTRAN/faster-whisper): models `tiny`, `base`, `small`, `medium` (and any other `Systran/faster-whisper-*` model in your cache). Language auto-detect or fixed.
 - **Speaker diarization** with SpeechBrain ECAPA-TDNN embeddings + agglomerative clustering. Speakers are numbered by talk time (`Speaker 001` is the most active). Rename or merge them in the Speaker Manager.
 - **Batch queue**, in-browser media → 16 kHz WAV converter, microphone recorder, inline segment editor, audio scrubber.
-- **Export**: Markdown (several presets), SRT, JSON, plain text. Transcripts are also saved automatically to `./transcripts/`.
+- **Export**: Markdown (several presets), SRT, JSON, plain text. Transcripts are saved automatically to `./outputs/` and `./transcripts/`, and files that already have a saved transcript in `outputs/` or `transcripts/` are automatically skipped in batch mode (with a one-click **Re-run** option).
 - **Optional in-browser backend** (transformers.js, no Python). Advanced: you must place the model files in `public/models/`. It has **no diarization** (single speaker).
 
 ### Known limitations

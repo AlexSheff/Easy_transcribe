@@ -28,6 +28,13 @@ export interface PipelineOptions {
   /** ISO code ("ru", "en", ...) or "auto". */
   language: string;
   engineConfig?: LocalEngineConfig;
+  force?: boolean;
+}
+
+export interface ExistingTranscriptMatch {
+  exists: boolean;
+  filename?: string;
+  relativePath?: string;
 }
 
 export class OfflineTranscriptionEngine {
@@ -65,6 +72,35 @@ export class OfflineTranscriptionEngine {
   }
 
   /**
+   * Queries the local Python server to see if transcripts for the given filenames
+   * already exist in outputs/ or transcripts/. Fails soft ({}) if server is offline.
+   */
+  public async checkExistingTranscripts(
+    filenames: string[],
+    serverUrl?: string
+  ): Promise<Record<string, ExistingTranscriptMatch>> {
+    if (!filenames.length) return {};
+    const baseUrl = (serverUrl || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+    try {
+      const resp = await fetch(`${baseUrl}/api/check-transcripts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filenames }),
+        signal: controller.signal,
+      });
+      if (!resp.ok) return {};
+      const data = await resp.json();
+      return (data && typeof data.results === 'object' && data.results) || {};
+    } catch {
+      return {};
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  /**
    * Main pipeline: decode/normalise audio in the browser, then transcribe with the selected backend.
    * Failures are thrown, never papered over with placeholder text.
    */
@@ -91,7 +127,7 @@ export class OfflineTranscriptionEngine {
     onProgress(100, `Transcription completed: ${segments.length} segments.`);
 
     return {
-      id: 'file_' + Date.now(),
+      id: `file_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
       filename: file.name,
       fileSize: file.size,
       duration,
@@ -126,6 +162,7 @@ export class OfflineTranscriptionEngine {
       language: options.language || 'auto',
       max_speakers: String(cfg?.maxSpeakers ?? 3),
       exact_speakers: cfg?.exactSpeakers ? '1' : '0',
+      skip_existing: !options.force && (cfg?.skipExisting ?? true) ? '1' : '0',
       filename: file.name,
     });
     onProgress(35, `Connecting to local faster-whisper server at ${serverUrl}...`);
@@ -163,6 +200,9 @@ export class OfflineTranscriptionEngine {
     }
     if (data.status === 'error' || data.error) {
       throw new Error(`Local server error: ${data.error}`);
+    }
+    if (data.status === 'skipped' || data.skipped) {
+      throw new Error(`SKIPPED:${data.existing_path || data.filename || 'outputs/'}`);
     }
     if (!Array.isArray(data.segments) || data.segments.length === 0) {
       throw new Error('No speech was detected. Check the audio, or lower "VAD Min Silence" in engine settings.');

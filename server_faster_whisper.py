@@ -87,6 +87,7 @@ DEFAULT_MODEL = "medium"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TRANSCRIPTS_DIR = os.path.join(BASE_DIR, "transcripts")
+OUTPUTS_DIR = os.environ.get("EASY_TSCRIBE_OUTPUTS_DIR") or os.path.join(BASE_DIR, "outputs")
 
 DEFAULT_ORIGINS = {"http://localhost:3000", "http://127.0.0.1:3000"}
 ALLOWED_ORIGINS = set(DEFAULT_ORIGINS)
@@ -308,7 +309,8 @@ def load_wav(wav_path):
         raise ValueError(f"Unsupported WAV sample width: {sampwidth} bytes")
 
     if nchannels > 1:
-        samples = samples[::nchannels]
+        usable = (len(samples) // nchannels) * nchannels
+        samples = samples[:usable].reshape(-1, nchannels).mean(axis=1)
     return samples, framerate
 
 
@@ -582,26 +584,121 @@ def build_markdown(source_name, final_segments, speaker_metadata):
         lines.append(f"- {spk['name']}: {spk['segmentsCount']} segment(s)")
     lines += ["", "## Transcript", ""]
     for seg in final_segments:
-        start_s = int(seg["start"])
-        time_str = f"{start_s // 60:02d}:{start_s % 60:02d}"
+        start_s = max(0, int(seg["start"]))
+        hours, rem = divmod(start_s, 3600)
+        minutes, seconds = divmod(rem, 60)
+        time_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         label = seg.get("speakerName", seg.get("speakerId", "Speaker"))
         lines.append(f"**[{time_str}] {label}:** {seg['text']}")
         lines.append("")
     return "\n".join(lines).strip()
 
 
-def write_transcript_file(filename, content):
-    """Writes into TRANSCRIPTS_DIR only. Returns (absolute_path, file_name)."""
-    base = sanitize_filename(filename)
-    if not base.lower().endswith(".md"):
-        base += ".md"
-    os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
-    root = os.path.realpath(TRANSCRIPTS_DIR)
+def _output_search_dirs():
+    """Returns unique (dir_path, label) pairs for outputs and transcripts."""
+    dirs = []
+    seen = set()
+    for path, label in ((OUTPUTS_DIR, "outputs"), (TRANSCRIPTS_DIR, "transcripts")):
+        if not path:
+            continue
+        real = os.path.realpath(path)
+        if real not in seen:
+            seen.add(real)
+            dirs.append((path, label))
+    return dirs
+
+
+def find_existing_transcript(source_name):
+    """
+    Checks if a transcript for `source_name` already exists and is non-empty in
+    OUTPUTS_DIR or TRANSCRIPTS_DIR. Returns metadata dict or None.
+    """
+    if not source_name:
+        return None
+    raw_base = os.path.splitext(os.path.basename(str(source_name)))[0]
+    clean_base = sanitize_filename(raw_base, default="")
+    if not clean_base:
+        return None
+
+    candidates = [
+        f"transcript_{clean_base}.md",
+        f"{clean_base}.md",
+        f"transcript_{clean_base}.txt",
+        f"{clean_base}.txt",
+        f"{clean_base}.srt",
+        f"transcript_{clean_base}.json",
+        f"{clean_base}.json",
+    ]
+    candidate_lower_map = {c.lower(): i for i, c in enumerate(candidates)}
+
+    for directory, label in _output_search_dirs():
+        if not os.path.isdir(directory):
+            continue
+        root = os.path.realpath(directory)
+        # Fast exact check first
+        for cand in candidates:
+            target = os.path.realpath(os.path.join(root, cand))
+            if os.path.dirname(target) == root and os.path.isfile(target) and os.path.getsize(target) > 0:
+                return {
+                    "exists": True,
+                    "filename": cand,
+                    "relativePath": f"{label}/{cand}",
+                    "fullPath": target,
+                }
+        # Case-insensitive fallback scan
+        try:
+            best_match = None
+            best_rank = len(candidates) + 1
+            with os.scandir(root) as it:
+                for entry in it:
+                    if not entry.is_file():
+                        continue
+                    rank = candidate_lower_map.get(entry.name.lower())
+                    if rank is not None and rank < best_rank:
+                        target = os.path.realpath(entry.path)
+                        if os.path.dirname(target) == root and os.path.getsize(target) > 0:
+                            best_rank = rank
+                            best_match = (entry.name, target)
+            if best_match is not None:
+                entry_name, target = best_match
+                return {
+                    "exists": True,
+                    "filename": entry_name,
+                    "relativePath": f"{label}/{entry_name}",
+                    "fullPath": target,
+                }
+        except OSError:
+            continue
+    return None
+
+
+def _write_file_to_dir(directory, base, content):
+    os.makedirs(directory, exist_ok=True)
+    root = os.path.realpath(directory)
     target = os.path.realpath(os.path.join(root, base))
     if os.path.dirname(target) != root:
         raise ValueError("Invalid file name")
     with open(target, "w", encoding="utf-8") as f:
         f.write(content)
+    return target
+
+
+def write_transcript_file(filename, content):
+    """Writes into TRANSCRIPTS_DIR (and mirrors to OUTPUTS_DIR when active). Returns (absolute_path, file_name)."""
+    base = sanitize_filename(filename)
+    if not base.lower().endswith(".md"):
+        base += ".md"
+    target = _write_file_to_dir(TRANSCRIPTS_DIR, base, content)
+
+    default_transcripts = os.path.realpath(os.path.join(BASE_DIR, "transcripts"))
+    default_outputs = os.path.realpath(os.path.join(BASE_DIR, "outputs"))
+    if OUTPUTS_DIR and (
+        os.path.realpath(TRANSCRIPTS_DIR) == default_transcripts
+        or os.path.realpath(OUTPUTS_DIR) != default_outputs
+    ):
+        if os.path.realpath(OUTPUTS_DIR) != os.path.realpath(TRANSCRIPTS_DIR):
+            _write_file_to_dir(OUTPUTS_DIR, base, content)
+
     return target, base
 
 
@@ -619,8 +716,14 @@ class TranscribeHandler(BaseHTTPRequestHandler):
 
     def _host_ok(self):
         """Blocks DNS rebinding: only accept requests addressed to a loopback name."""
-        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
-        return host in ("127.0.0.1", "localhost", "::1")
+        raw_host = (self.headers.get("Host") or "").strip()
+        if not raw_host:
+            return False
+        try:
+            hostname = (urllib.parse.urlsplit(f"//{raw_host}").hostname or "").lower()
+        except ValueError:
+            return False
+        return hostname in ("127.0.0.1", "localhost", "::1")
 
     def _origin_ok(self):
         origin = self.headers.get("Origin")
@@ -681,7 +784,8 @@ class TranscribeHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._guard():
             return
-        path = urllib.parse.urlparse(self.path).path
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
         if path in ("/health", "/", "/api/health"):
             self._json(200, {
                 "status": "online",
@@ -692,6 +796,20 @@ class TranscribeHandler(BaseHTTPRequestHandler):
                 "speechbrain_ecapa": SNAPSHOT_SPEECHBRAIN_ECAPA is not None,
                 "offline": True,
             })
+        elif path in ("/api/check-transcript", "/check-transcript"):
+            params = urllib.parse.parse_qs(parsed.query)
+            filename = (params.get("filename") or [""])[0]
+            if not filename.strip():
+                return self._json(400, {"error": "Missing 'filename' query parameter"})
+            match = find_existing_transcript(filename)
+            if match:
+                self._json(200, {
+                    "exists": True,
+                    "filename": match["filename"],
+                    "relativePath": match["relativePath"],
+                })
+            else:
+                self._json(200, {"exists": False})
         else:
             self._json(404, {"error": "Not found"})
 
@@ -699,15 +817,44 @@ class TranscribeHandler(BaseHTTPRequestHandler):
         if not self._guard():
             return
         path = urllib.parse.urlparse(self.path).path
+        if path in ("/api/check-transcripts", "/check-transcripts"):
+            return self._handle_check_transcripts()
         if path in ("/api/save-markdown", "/save-markdown"):
             return self._handle_save_markdown()
         if path in ("/transcribe", "/api/transcribe"):
             return self._handle_transcribe()
         self._json(404, {"error": "Not found"})
 
+    def _handle_check_transcripts(self):
+        length = self._content_length()
+        if length <= 0 or length > 2 * 1024 * 1024:
+            self.close_connection = True
+            return self._json(400, {"error": "Invalid or too large body"})
+        try:
+            data = json.loads(self.rfile.read(length).decode("utf-8"))
+            filenames = data.get("filenames")
+            if not isinstance(filenames, list) or len(filenames) > 5000:
+                return self._json(400, {"error": "Expected 'filenames' array (max 5000 items)"})
+            results = {}
+            for name in filenames:
+                name_str = str(name)
+                match = find_existing_transcript(name_str)
+                if match:
+                    results[name_str] = {
+                        "exists": True,
+                        "filename": match["filename"],
+                        "relativePath": match["relativePath"],
+                    }
+                else:
+                    results[name_str] = {"exists": False}
+            self._json(200, {"results": results})
+        except Exception as e:
+            self._json(400, {"error": f"Invalid JSON payload: {e}"})
+
     def _handle_save_markdown(self):
         length = self._content_length()
         if length <= 0 or length > 50 * 1024 * 1024:
+            self.close_connection = True
             return self._json(400, {"error": "Invalid or too large body"})
         try:
             data = json.loads(self.rfile.read(length).decode("utf-8"))
@@ -731,11 +878,13 @@ class TranscribeHandler(BaseHTTPRequestHandler):
                 return params.get(name, [default])[0]
 
             try:
-                min_silence_ms = int(p("min_silence_ms", 250))
-                beam_size = int(p("beam_size", 5))
+                min_silence_ms = max(50, min(5000, int(p("min_silence_ms", 250))))
+                beam_size = max(1, min(10, int(p("beam_size", 5))))
                 max_speakers = max(1, min(12, int(p("max_speakers", DEFAULT_MAX_SPEAKERS))))
                 exact_speakers = p("exact_speakers", "0") in ("1", "true", "True")
+                skip_existing = p("skip_existing", "0") in ("1", "true", "True")
             except ValueError:
+                self.close_connection = True
                 return self._json(400, {"error": "Invalid numeric query parameter"})
 
             model_name = p("model") or default_model_ref
@@ -745,14 +894,31 @@ class TranscribeHandler(BaseHTTPRequestHandler):
                 language = None
             source_name = p("filename", f"audio_{int(time.time())}.wav")
 
+            if skip_existing:
+                existing = find_existing_transcript(source_name)
+                if existing:
+                    self.close_connection = True
+                    return self._json(200, {
+                        "status": "skipped",
+                        "skipped": True,
+                        "filename": existing["filename"],
+                        "existing_path": existing["relativePath"],
+                    })
+
             length = self._content_length()
             if length <= 0:
+                self.close_connection = True
                 return self._json(400, {"error": "Empty or invalid body"})
             if length > MAX_UPLOAD_BYTES:
+                self.close_connection = True
                 return self._json(413, {"error": f"Upload exceeds limit of {MAX_UPLOAD_BYTES // (1024 * 1024)} MB"})
 
             # Resolve the model before reading the upload so a bad name fails fast.
-            resolve_whisper_model(model_name)
+            try:
+                resolve_whisper_model(model_name)
+            except ModelNotFound:
+                self.close_connection = True
+                raise
 
             # Stream the upload to disk (no second copy in RAM).
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -765,6 +931,7 @@ class TranscribeHandler(BaseHTTPRequestHandler):
                     tmp.write(chunk)
                     remaining -= len(chunk)
             if remaining > 0:
+                self.close_connection = True
                 return self._json(400, {"error": "Incomplete upload"})
 
             print(f"[*] Processing '{source_name}' ({length} bytes, model={model_name}, "
@@ -814,7 +981,10 @@ class TranscribeHandler(BaseHTTPRequestHandler):
 
                 print(f"[+] Whisper produced {len(raw_results)} segments.")
 
-                samples, sr = load_wav(tmp_path)
+                try:
+                    samples, sr = load_wav(tmp_path)
+                except (wave.Error, ValueError) as wav_err:
+                    return self._json(400, {"status": "error", "error": f"Invalid WAV audio: {wav_err}"})
                 final_segments, speaker_metadata = perform_speaker_diarization(
                     samples, sr, raw_results, max_speakers, exact_speakers
                 )

@@ -54,6 +54,7 @@ class FakeModel:
 @pytest.fixture()
 def server(tmp_path, monkeypatch):
     monkeypatch.setattr(srv, "TRANSCRIPTS_DIR", str(tmp_path / "transcripts"))
+    monkeypatch.setattr(srv, "OUTPUTS_DIR", str(tmp_path / "outputs"))
     monkeypatch.setattr(srv, "get_whisper_model", lambda *a, **k: FakeModel())
     monkeypatch.setattr(srv, "resolve_whisper_model", lambda name: name if name != "nope" else (_ for _ in ()).throw(srv.ModelNotFound("Whisper model 'nope' is not in the local Hugging Face cache")))
     monkeypatch.setattr(srv, "diarizer_type", "acoustic-multifeature")
@@ -99,6 +100,14 @@ def test_dns_rebinding_host_is_rejected(server):
     assert resp.status == 403
 
 
+def test_ipv6_loopback_host_is_allowed(server):
+    port, _ = server
+    resp, _ = request(port, "GET", "/health", headers={"Host": "[::1]"})
+    assert resp.status == 200
+    resp, _ = request(port, "GET", "/health", headers={"Host": "[::1]:8000"})
+    assert resp.status == 200
+
+
 def test_transcribe_returns_segments_speakers_and_real_confidence(server):
     port, tmp_path = server
     resp, data = request(
@@ -115,6 +124,7 @@ def test_transcribe_returns_segments_speakers_and_real_confidence(server):
     assert all("confidence" not in spk for spk in payload["speakers"].values())
     assert FakeModel.calls[0]["language"] == "ru"          # language is now honoured
     assert (tmp_path / "transcripts" / "transcript_a b.md").exists()
+    assert (tmp_path / "outputs" / "transcript_a b.md").exists()
 
 
 def test_auto_language_means_none(server):
@@ -252,3 +262,37 @@ def test_client_disconnect_does_not_raise(server, capsys):
     import time; time.sleep(1.0)
     resp, _ = request(port, "GET", "/health")     # server still alive
     assert resp.status == 200
+
+
+def test_check_transcripts_and_skip_existing_in_outputs(server):
+    port, tmp_path = server
+    outputs_dir = tmp_path / "outputs"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    (outputs_dir / "meeting_01.md").write_text("# Already done\n", encoding="utf-8")
+    (outputs_dir / "empty_file.md").write_text("", encoding="utf-8")
+
+    # Batch check endpoint
+    body = json.dumps({"filenames": ["meeting_01.mp4", "empty_file.wav", "fresh.mp3"]})
+    resp, data = request(
+        port, "POST", "/api/check-transcripts", body=body,
+        headers={"Origin": ORIGIN, "Content-Type": "application/json"},
+    )
+    assert resp.status == 200
+    results = json.loads(data)["results"]
+    assert results["meeting_01.mp4"]["exists"] is True
+    assert results["meeting_01.mp4"]["relativePath"] == "outputs/meeting_01.md"
+    assert results["empty_file.wav"]["exists"] is False
+    assert results["fresh.mp3"]["exists"] is False
+
+    # Transcribe with skip_existing=1 must skip without invoking Whisper
+    resp, data = request(
+        port, "POST", "/transcribe?skip_existing=1&filename=meeting_01.mp4",
+        body=make_wav(), headers={"Origin": ORIGIN, "Content-Type": "audio/wav"},
+    )
+    assert resp.status == 200
+    payload = json.loads(data)
+    assert payload["status"] == "skipped"
+    assert payload["skipped"] is True
+    assert payload["existing_path"] == "outputs/meeting_01.md"
+    assert len(FakeModel.calls) == 0
+

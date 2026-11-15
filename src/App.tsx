@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { WhisperModelSize, ProcessedFile, LogEntry, SpeakerMetadata, BatchFileItem, LocalEngineConfig } from './types';
 import { OfflineTranscriptionEngine } from './services/transcriptionEngine';
-import { generateMarkdownExport } from './services/exporter';
+import { generateMarkdownExport, sanitizeTranscriptBaseName } from './services/exporter';
 import { Sidebar } from './components/Sidebar';
 import { StatCards } from './components/StatCards';
 import { StatusBox } from './components/StatusBox';
@@ -13,20 +13,19 @@ import { RecorderModal } from './components/RecorderModal';
 import { SpeakerManagerModal } from './components/SpeakerManagerModal';
 import { ExportModal } from './components/ExportModal';
 import { ModelSettingsModal } from './components/ModelSettingsModal';
-import { Upload, Sparkles, SlidersHorizontal, Eye, AlertTriangle, X, FileText, Layers, Download, Sliders } from 'lucide-react';
+import { Upload, SlidersHorizontal, Eye, AlertTriangle, X, FileText, Layers, Sliders } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [model, setModel] = useState<WhisperModelSize>('medium');
   const [status, setStatus] = useState<string>('System Ready');
   const [progress, setProgress] = useState<number>(0);
   const [showProgress, setShowProgress] = useState<boolean>(false);
-  const [queueCount, setQueueCount] = useState<number>(0);
   const [processedCount, setProcessedCount] = useState<number>(0);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const [queueItems, setQueueItems] = useState<BatchFileItem[]>([]);
 
-  // Engine configuration with local Systran model path and strict offline enforcement
+  // Engine configuration with strict offline enforcement and skipExisting enabled by default
   const [engineConfig, setEngineConfig] = useState<LocalEngineConfig>({
     localModelPath: '/models/',
     backend: 'local-faster-whisper',
@@ -36,6 +35,7 @@ export const App: React.FC = () => {
     beamSize: 5,
     maxSpeakers: 3,
     exactSpeakers: false,
+    skipExisting: true,
   });
 
   const [logs, setLogs] = useState<LogEntry[]>([
@@ -66,24 +66,34 @@ export const App: React.FC = () => {
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isModelSettingsOpen, setIsModelSettingsOpen] = useState(false);
 
-  // Hidden File Input
+  // Refs for queue processing & audio URL lifecycle
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  // Pipeline Engine Instance
   const engineRef = useRef<OfflineTranscriptionEngine>(new OfflineTranscriptionEngine());
-  const activeAudioUrlRef = useRef<string | null>(null);
+  const audioUrlsRef = useRef<Map<string, string>>(new Map());
+  const pendingQueueRef = useRef<BatchFileItem[]>([]);
+  const isProcessingRef = useRef<boolean>(false);
+  const engineConfigRef = useRef<LocalEngineConfig>(engineConfig);
+  const modelRef = useRef<WhisperModelSize>(model);
+  const processedFilesRef = useRef<ProcessedFile[]>(processedFiles);
+
+  engineConfigRef.current = engineConfig;
+  modelRef.current = model;
+  processedFilesRef.current = processedFiles;
 
   useEffect(() => {
     return () => {
-      if (activeAudioUrlRef.current) {
-        URL.revokeObjectURL(activeAudioUrlRef.current);
-      }
+      audioUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      audioUrlsRef.current.clear();
     };
   }, []);
 
+  const queueCount = queueItems.filter(
+    (item) => item.status === 'queued' || item.status === 'checking' || item.status === 'processing'
+  ).length;
+
   const addLog = (type: 'SYSTEM' | 'PROC' | 'DONE' | 'ERROR' | 'INFO', message: string) => {
     const entry: LogEntry = {
-      id: 'log_' + Math.random().toString(36).substring(2, 9),
+      id: `log_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
       timestamp: new Date().toLocaleTimeString(),
       type,
       message,
@@ -93,170 +103,36 @@ export const App: React.FC = () => {
 
   // Model change handler
   const handleModelChange = async (newModel: WhisperModelSize) => {
-    if (newModel === model || isProcessing) return;
+    if (newModel === model || isProcessingRef.current) return;
     setModel(newModel);
     setShowProgress(true);
     setProgress(20);
     setStatus(`Switching model configuration to [${newModel.toUpperCase()}]...`);
     addLog('SYSTEM', `Model size set to Whisper ${newModel.toUpperCase()}.`);
 
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 200));
     setProgress(100);
     setStatus('System Ready');
     setShowProgress(false);
     addLog('DONE', `Engine configured for ${newModel.toUpperCase()} (Backend: ${engineConfig.backend}).`);
   };
 
-  // Process multiple media files through the pipeline sequentially
-  const enqueueAndProcessFiles = async (files: File[]) => {
-    if (!files || files.length === 0 || isProcessing) return;
-    setErrorBanner(null);
-    setIsProcessing(true);
-    setShowProgress(true);
-
-    const total = files.length;
-    setQueueCount(total);
-    addLog('SYSTEM', `Batch queue initialized: ${total} file(s) received for transcription.`);
-
-    // Build batch queue items
-    const newItems: BatchFileItem[] = files.map((f, idx) => ({
-      id: `queue_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
-      file: f,
-      name: f.name,
-      size: f.size,
-      status: 'queued',
-      progress: 0,
-      stageMessage: 'Queued for processing...'
-    }));
-
-    setQueueItems((prev) => [...prev, ...newItems]);
-    if (total > 1 || activeTab === 'console') {
-      setActiveTab('queue');
-    }
-
-    setErrorBanner(null);
-    let hasErrors = false;
-
-    for (let i = 0; i < total; i++) {
-      const file = files[i];
-      const batchItem = newItems[i];
-      const currentIdx = i + 1;
-      setProgress(5);
-      setShowProgress(true);
-      setStatus(`[${currentIdx}/${total}] Processing: ${file.name}...`);
-      addLog('PROC', `[${currentIdx}/${total}] Started processing: ${file.name}...`);
-
-      setQueueItems((prev) =>
-        prev.map((item) =>
-          item.id === batchItem.id
-            ? { ...item, status: 'processing', progress: 5, stageMessage: 'Preparing 16kHz audio track...' }
-            : item
-        )
-      );
-
-      try {
-        const result = await engineRef.current.processMediaFile(
-          file,
-          {
-            modelSize: model,
-            language: 'auto',
-            engineConfig,
-          },
-          (prog, stage) => {
-            setProgress(prog);
-            setStatus(`[${currentIdx}/${total}] ${stage}`);
-            setQueueItems((prev) =>
-              prev.map((item) =>
-                item.id === batchItem.id
-                  ? { ...item, progress: prog, stageMessage: stage }
-                  : item
-              )
-            );
-            if (prog === 35 || prog === 60 || prog === 75 || prog === 88) {
-              addLog('PROC', `[${currentIdx}/${total}] ${stage}`);
-            }
-          }
-        );
-
-        if (activeAudioUrlRef.current && activeFile?.filename === file.name) {
-          URL.revokeObjectURL(activeAudioUrlRef.current);
-        }
-        activeAudioUrlRef.current = result.audioUrl || null;
-
-        setProcessedFiles((prev) => {
-          const others = prev.filter((p) => p.filename !== file.name);
-          return [...others, result];
-        });
-        setActiveFile(result);
-        setSpeakers(result.speakers);
-        setProcessedCount((prev) => prev + 1);
-        setQueueCount(Math.max(0, total - currentIdx));
-
-        setQueueItems((prev) =>
-          prev.map((item) =>
-            item.id === batchItem.id
-              ? {
-                  ...item,
-                  status: 'completed',
-                  progress: 100,
-                  stageMessage: 'Completed successfully',
-                  result
-                }
-              : item
-          )
-        );
-
-        const outName = `transcript_${file.name.replace(/\.[^/.]+$/, '')}.md`;
-        addLog('DONE', `Completed [${currentIdx}/${total}]: ${file.name} -> ${outName}`);
-        addLog('DONE', `Diarization: identified ${Object.keys(result.speakers).length} distinct speaker(s).`);
-
-        // Automatically persist standard markdown directly to project transcripts folder
-        await saveTranscriptMarkdownToServer(result, file.name);
-      } catch (err: unknown) {
-        hasErrors = true;
-        const msg = err instanceof Error ? err.message : String(err);
-        addLog('ERROR', `Error processing ${file.name}:\n${msg}`);
-        setErrorBanner(`Recognition Failed for "${file.name}":\n${msg}`);
-        setProgress(0);
-        setShowProgress(false);
-        setIsProcessing(false);
-        setStatus(`Recognition Failed: ${file.name}`);
-        setQueueItems((prev) =>
-          prev.map((item) =>
-            item.id === batchItem.id
-              ? {
-                  ...item,
-                  status: 'error',
-                  progress: 0,
-                  stageMessage: 'Recognition error',
-                  error: msg
-                }
-              : item
-          )
-        );
-      }
-    }
-
-    setShowProgress(false);
-    setIsProcessing(false);
-    if (hasErrors) {
-      setStatus('Processing stopped due to error. See alert above.');
-    } else {
-      setStatus('All files in batch queue processed successfully');
-    }
-  };
-
-  // Save the Markdown transcript into ./transcripts via the local Python server.
-  const saveTranscriptMarkdownToServer = async (fileData: ProcessedFile, originalName: string) => {
-    if (engineConfig.backend !== 'local-faster-whisper' || !engineConfig.localServerUrl) {
+  // Save the Markdown transcript into ./transcripts and ./outputs via the local Python server.
+  const saveTranscriptMarkdownToServer = async (
+    fileData: ProcessedFile,
+    originalName: string,
+    cfgOverride?: LocalEngineConfig
+  ) => {
+    const cfg = cfgOverride || engineConfigRef.current;
+    if (cfg.backend !== 'local-faster-whisper' || !cfg.localServerUrl) {
       addLog('INFO', '[AUTO-SAVE] Skipped: auto-save needs the local Python server. Use Export to download the file.');
       return;
     }
     const mdContent = generateMarkdownExport(fileData, fileData.speakers, { preset: 'standard' });
-    const bName = originalName.replace(/\.[^/.]+$/, '');
+    const bName = sanitizeTranscriptBaseName(originalName);
     const cleanName = `transcript_${bName}.md`;
     try {
-      const res = await fetch(`${engineConfig.localServerUrl.replace(/\/+$/, '')}/api/save-markdown`, {
+      const res = await fetch(`${cfg.localServerUrl.replace(/\/+$/, '')}/api/save-markdown`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filename: cleanName, content: mdContent })
@@ -270,11 +146,282 @@ export const App: React.FC = () => {
     }
   };
 
+  // Helper to check if a file already has a transcript in outputs/ or transcripts/
+  const findExistingOutputForFile = async (
+    filename: string,
+    cfg: LocalEngineConfig
+  ): Promise<string | null> => {
+    if (cfg.backend === 'local-faster-whisper' && cfg.localServerUrl) {
+      const results = await engineRef.current.checkExistingTranscripts([filename], cfg.localServerUrl);
+      const match = results[filename];
+      if (match?.exists) {
+        return match.relativePath || match.filename || 'outputs/';
+      }
+    }
+    // Session fallback for in-browser backend
+    if (cfg.backend === 'offline-transformers') {
+      const cleanBase = sanitizeTranscriptBaseName(filename).toLowerCase();
+      const alreadyInSession = processedFilesRef.current.find(
+        (pf) => sanitizeTranscriptBaseName(pf.filename).toLowerCase() === cleanBase
+      );
+      if (alreadyInSession) {
+        return `session (${alreadyInSession.filename})`;
+      }
+    }
+    return null;
+  };
+
+  // Sequential queue runner: consumes pendingQueueRef until empty
+  const runQueueLoop = async () => {
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
+    setIsProcessing(true);
+    setShowProgress(true);
+    setErrorBanner(null);
+
+    let hasErrors = false;
+    let processedInRun = 0;
+    let skippedInRun = 0;
+
+    try {
+      while (pendingQueueRef.current.length > 0) {
+        const batchItem = pendingQueueRef.current.shift()!;
+        const file = batchItem.file;
+        const cfg = engineConfigRef.current;
+        const currentModel = modelRef.current;
+        const remainingCount = pendingQueueRef.current.length;
+
+        // 1. Check outputs/ and transcripts/ before decoding audio
+        if (!batchItem.force && (cfg.skipExisting ?? true)) {
+          setStatus(`Checking outputs for ${file.name}...`);
+          setQueueItems((prev) =>
+            prev.map((item) =>
+              item.id === batchItem.id
+                ? { ...item, status: 'checking', progress: 0, stageMessage: 'Checking outputs...' }
+                : item
+            )
+          );
+
+          const existingPath = await findExistingOutputForFile(file.name, cfg);
+          if (existingPath) {
+            skippedInRun += 1;
+            setQueueItems((prev) =>
+              prev.map((item) =>
+                item.id === batchItem.id
+                  ? {
+                      ...item,
+                      status: 'skipped',
+                      progress: 100,
+                      stageMessage: `Already exists in ${existingPath}`,
+                      existingPath,
+                    }
+                  : item
+              )
+            );
+            addLog('INFO', `[SKIP] "${file.name}" already transcribed (${existingPath}).`);
+            continue;
+          }
+        }
+
+        // 2. Transcribe file
+        setProgress(5);
+        setShowProgress(true);
+        setStatus(`Processing: ${file.name}${remainingCount > 0 ? ` (${remainingCount} more queued)` : ''}...`);
+        addLog('PROC', `Started processing: ${file.name}...`);
+
+        setQueueItems((prev) =>
+          prev.map((item) =>
+            item.id === batchItem.id
+              ? { ...item, status: 'processing', progress: 5, stageMessage: 'Preparing 16kHz audio track...' }
+              : item
+          )
+        );
+
+        try {
+          const result = await engineRef.current.processMediaFile(
+            file,
+            {
+              modelSize: currentModel,
+              language: 'auto',
+              engineConfig: cfg,
+              force: batchItem.force,
+            },
+            (prog, stage) => {
+              setProgress(prog);
+              setStatus(stage);
+              setQueueItems((prev) =>
+                prev.map((item) =>
+                  item.id === batchItem.id
+                    ? { ...item, progress: prog, stageMessage: stage }
+                    : item
+                )
+              );
+              if (prog === 35 || prog === 60 || prog === 75 || prog === 88) {
+                addLog('PROC', `[${file.name}] ${stage}`);
+              }
+            }
+          );
+
+          // Revoke old URL ONLY for replaced file with same filename
+          setProcessedFiles((prev) => {
+            const replaced = prev.filter((p) => p.filename === file.name);
+            replaced.forEach((old) => {
+              const oldUrl = audioUrlsRef.current.get(old.id);
+              if (oldUrl) {
+                URL.revokeObjectURL(oldUrl);
+                audioUrlsRef.current.delete(old.id);
+              }
+            });
+            const others = prev.filter((p) => p.filename !== file.name);
+            return [...others, result];
+          });
+
+          if (result.audioUrl) {
+            audioUrlsRef.current.set(result.id, result.audioUrl);
+          }
+
+          setActiveFile(result);
+          setSpeakers(result.speakers);
+          setProcessedCount((prev) => prev + 1);
+          processedInRun += 1;
+
+          setQueueItems((prev) =>
+            prev.map((item) =>
+              item.id === batchItem.id
+                ? {
+                    ...item,
+                    status: 'completed',
+                    progress: 100,
+                    stageMessage: 'Completed successfully',
+                    result,
+                    error: undefined,
+                  }
+                : item
+            )
+          );
+
+          const outName = `transcript_${sanitizeTranscriptBaseName(file.name)}.md`;
+          addLog('DONE', `Completed: ${file.name} -> ${outName}`);
+          addLog('DONE', `Diarization: identified ${Object.keys(result.speakers).length} distinct speaker(s).`);
+
+          await saveTranscriptMarkdownToServer(result, file.name, cfg);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.startsWith('SKIPPED:')) {
+            const existingPath = msg.slice('SKIPPED:'.length) || 'outputs/';
+            skippedInRun += 1;
+            setQueueItems((prev) =>
+              prev.map((item) =>
+                item.id === batchItem.id
+                  ? {
+                      ...item,
+                      status: 'skipped',
+                      progress: 100,
+                      stageMessage: `Already exists in ${existingPath}`,
+                      existingPath,
+                    }
+                  : item
+              )
+            );
+            addLog('INFO', `[SKIP] "${file.name}" already transcribed (${existingPath}).`);
+            continue;
+          }
+
+          hasErrors = true;
+          addLog('ERROR', `Error processing ${file.name}:\n${msg}`);
+          setErrorBanner(`Recognition Failed for "${file.name}":\n${msg}`);
+          setStatus(`Recognition Failed: ${file.name}`);
+          setQueueItems((prev) =>
+            prev.map((item) =>
+              item.id === batchItem.id
+                ? {
+                    ...item,
+                    status: 'error',
+                    progress: 0,
+                    stageMessage: 'Recognition error',
+                    error: msg
+                  }
+                : item
+            )
+          );
+        }
+      }
+    } finally {
+      isProcessingRef.current = false;
+      setIsProcessing(false);
+      setShowProgress(false);
+      setProgress(0);
+      if (hasErrors) {
+        setStatus('Queue finished with errors. See alert above.');
+      } else if (skippedInRun > 0 && processedInRun === 0) {
+        setStatus(`Skipped ${skippedInRun} already transcribed file(s)`);
+      } else if (skippedInRun > 0) {
+        setStatus(`Processed ${processedInRun}, skipped ${skippedInRun} existing file(s)`);
+      } else {
+        setStatus('All files in batch queue processed successfully');
+      }
+    }
+  };
+
+  // Enqueue one or more media files (works even while another batch is running)
+  const enqueueAndProcessFiles = (files: File[], options?: { force?: boolean }) => {
+    if (!files || files.length === 0) return;
+    setErrorBanner(null);
+
+    const newItems: BatchFileItem[] = files.map((f, idx) => ({
+      id: `queue_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+      file: f,
+      name: f.name,
+      size: f.size,
+      status: 'queued',
+      progress: 0,
+      force: options?.force,
+      stageMessage: 'Queued for processing...'
+    }));
+
+    pendingQueueRef.current.push(...newItems);
+    setQueueItems((prev) => [...prev, ...newItems]);
+
+    if (files.length > 1 || activeTab === 'console') {
+      setActiveTab('queue');
+    }
+
+    addLog('SYSTEM', `Queued ${files.length} file(s) for transcription.`);
+    void runQueueLoop();
+  };
+
+  // Force re-transcribe a skipped or errored item
+  const handleForceTranscribeItem = (id: string) => {
+    const existingItem = queueItems.find((item) => item.id === id);
+    if (!existingItem || existingItem.status === 'processing' || existingItem.status === 'checking') {
+      return;
+    }
+
+    const updatedItem: BatchFileItem = {
+      ...existingItem,
+      status: 'queued',
+      progress: 0,
+      error: undefined,
+      existingPath: undefined,
+      force: true,
+      stageMessage: 'Queued (forced re-run)...',
+    };
+
+    setQueueItems((prev) => prev.map((it) => (it.id === id ? updatedItem : it)));
+    pendingQueueRef.current = pendingQueueRef.current.filter((it) => it.id !== id);
+    pendingQueueRef.current.push(updatedItem);
+    addLog('SYSTEM', `Forced re-transcription queued for: ${existingItem.name}`);
+    void runQueueLoop();
+  };
+
   const handleClearQueue = () => {
+    if (isProcessingRef.current) return;
+    pendingQueueRef.current = [];
     setQueueItems([]);
   };
 
   const handleRemoveQueueItem = (id: string) => {
+    pendingQueueRef.current = pendingQueueRef.current.filter((item) => item.id !== id);
     setQueueItems((prev) => prev.filter((item) => item.id !== id));
   };
 
@@ -287,50 +434,88 @@ export const App: React.FC = () => {
     e.target.value = '';
   };
 
-  // Update Speaker Metadata
+  // Sync updated ProcessedFile across activeFile, processedFiles, and queueItems
+  const syncUpdatedFile = (updatedFile: ProcessedFile) => {
+    setActiveFile(updatedFile);
+    setSpeakers(updatedFile.speakers);
+    setProcessedFiles((prev) => prev.map((f) => (f.id === updatedFile.id ? updatedFile : f)));
+    setQueueItems((prev) =>
+      prev.map((q) => (q.result?.id === updatedFile.id ? { ...q, result: updatedFile } : q))
+    );
+  };
+
+  // Update Speaker Metadata on activeFile
   const handleUpdateSpeaker = (id: string, updates: Partial<SpeakerMetadata>) => {
-    engineRef.current.updateSpeaker(id, updates);
-    const spks = engineRef.current.getSpeakers();
-    setSpeakers(spks);
-    setActiveFile((prev) => (prev ? { ...prev, speakers: spks } : null));
-    setProcessedFiles((prev) =>
-      prev.map((f) => (f.id === activeFile?.id ? { ...f, speakers: spks } : f))
-    );
+    if (!activeFile) return;
+    const existing = activeFile.speakers[id];
+    if (!existing) return;
+
+    const updatedSpeakers: Record<string, SpeakerMetadata> = {
+      ...activeFile.speakers,
+      [id]: { ...existing, ...updates },
+    };
+    const updatedFile: ProcessedFile = {
+      ...activeFile,
+      speakers: updatedSpeakers,
+    };
+    syncUpdatedFile(updatedFile);
     addLog('INFO', `Updated speaker identity ${id} -> ${updates.name || ''}`);
+    void saveTranscriptMarkdownToServer(updatedFile, activeFile.filename);
   };
 
-  // Merge Speakers
+  // Merge Speakers on activeFile
   const handleMergeSpeakers = (sourceId: string, targetId: string) => {
-    engineRef.current.mergeSpeakers(sourceId, targetId);
-    const spks = engineRef.current.getSpeakers();
-    setSpeakers(spks);
+    if (!activeFile || sourceId === targetId) return;
+    const source = activeFile.speakers[sourceId];
+    const target = activeFile.speakers[targetId];
+    if (!source || !target) return;
 
-    // Update current active file segments & speakers
-    setActiveFile((prev) => {
-      if (!prev) return null;
-      const updatedSegments = prev.segments.map((seg) =>
-        seg.speakerId === sourceId ? { ...seg, speakerId: targetId } : seg
-      );
-      return { ...prev, segments: updatedSegments, speakers: spks };
-    });
-    setProcessedFiles((prev) =>
-      prev.map((f) => {
-        if (f.id !== activeFile?.id) return f;
-        const updatedSegments = f.segments.map((seg) =>
-          seg.speakerId === sourceId ? { ...seg, speakerId: targetId } : seg
-        );
-        return { ...f, segments: updatedSegments, speakers: spks };
-      })
+    const updatedSpeakers: Record<string, SpeakerMetadata> = { ...activeFile.speakers };
+    updatedSpeakers[targetId] = {
+      ...target,
+      sampleCount: target.sampleCount + source.sampleCount,
+    };
+    delete updatedSpeakers[sourceId];
+
+    const updatedSegments = activeFile.segments.map((seg) =>
+      seg.speakerId === sourceId ? { ...seg, speakerId: targetId } : seg
     );
+
+    const updatedFile: ProcessedFile = {
+      ...activeFile,
+      segments: updatedSegments,
+      speakers: updatedSpeakers,
+    };
+    syncUpdatedFile(updatedFile);
     addLog('INFO', `Merged speaker identity ${sourceId} into ${targetId}`);
+    void saveTranscriptMarkdownToServer(updatedFile, activeFile.filename);
   };
 
-  // Reset Voice DB
+  // Reset Voice DB (collapses all speakers in activeFile into Speaker 001 so segments remain valid)
   const handleResetDb = () => {
     engineRef.current.resetVoiceDb();
-    setSpeakers({});
-    setActiveFile((prev) => (prev ? { ...prev, speakers: {} } : null));
-    addLog('SYSTEM', 'Voice database reset. Session voiceprints cleared.');
+    if (activeFile) {
+      const fallbackSpeaker: SpeakerMetadata = {
+        id: 'speaker_001',
+        name: 'Speaker 001',
+        gender: 'Unknown',
+        sampleCount: activeFile.segments.length,
+        color: '#00ffcc',
+      };
+      const updatedSegments = activeFile.segments.map((seg) => ({
+        ...seg,
+        speakerId: 'speaker_001',
+      }));
+      const updatedFile: ProcessedFile = {
+        ...activeFile,
+        segments: updatedSegments,
+        speakers: { speaker_001: fallbackSpeaker },
+      };
+      syncUpdatedFile(updatedFile);
+    } else {
+      setSpeakers({});
+    }
+    addLog('SYSTEM', 'Speaker labels reset to a single default speaker for the active file.');
   };
 
   // Update segment text edit
@@ -338,12 +523,9 @@ export const App: React.FC = () => {
     if (!activeFile) return;
     const updated = activeFile.segments.map((s) => (s.id === segId ? { ...s, text: newText } : s));
     const updatedFile = { ...activeFile, segments: updated };
-    setActiveFile(updatedFile);
-    setProcessedFiles((prev) =>
-      prev.map((f) => (f.id === activeFile.id ? { ...f, segments: updated } : f))
-    );
+    syncUpdatedFile(updatedFile);
     addLog('INFO', `Edited segment ${segId}.`);
-    saveTranscriptMarkdownToServer(updatedFile, activeFile.filename);
+    void saveTranscriptMarkdownToServer(updatedFile, activeFile.filename);
   };
 
   return (
@@ -392,7 +574,7 @@ export const App: React.FC = () => {
         className="hidden"
       />
 
-      {/* Sidebar matching PySide6 */}
+      {/* Sidebar */}
       <Sidebar
         model={model}
         onModelChange={handleModelChange}
@@ -505,7 +687,11 @@ export const App: React.FC = () => {
               <span>Local Model Config</span>
             </button>
             <span>·</span>
-            <span>Diarization: Pitch F0 + AHC</span>
+            <span>
+              {engineConfig.backend === 'local-faster-whisper'
+                ? 'Diarization: ECAPA / AHC'
+                : 'Single Speaker (Browser)'}
+            </span>
             <span>·</span>
             <span className="text-[#00ffcc]">Output: Markdown (.md)</span>
           </div>
@@ -534,7 +720,7 @@ export const App: React.FC = () => {
                 </span>
                 <div className="mt-4 flex items-center gap-2 text-xs font-mono text-[#00ffcc] bg-[#00ffcc]/10 border border-[#00ffcc]/20 px-3.5 py-1.5 rounded-lg">
                   <span className="w-1.5 h-1.5 rounded-full bg-[#00ffcc]"></span>
-                  <span>Auto-saves standard .md transcripts to project/transcripts/</span>
+                  <span>Auto-saves to outputs/ & transcripts/ (skips already transcribed files)</span>
                 </div>
               </div>
             )}
@@ -548,11 +734,11 @@ export const App: React.FC = () => {
               processedFiles={processedFiles}
               activeFile={activeFile}
               isProcessing={isProcessing}
+              skipExisting={engineConfig.skipExisting ?? true}
+              onToggleSkipExisting={(enabled) =>
+                setEngineConfig((prev) => ({ ...prev, skipExisting: enabled }))
+              }
               onSelectFile={(f) => {
-                if (activeAudioUrlRef.current && activeAudioUrlRef.current !== f.audioUrl) {
-                  URL.revokeObjectURL(activeAudioUrlRef.current);
-                }
-                activeAudioUrlRef.current = f.audioUrl || null;
                 setActiveFile(f);
                 setSpeakers(f.speakers);
                 setActiveTab('transcript');
@@ -560,6 +746,7 @@ export const App: React.FC = () => {
               onAddFilesClick={() => fileInputRef.current?.click()}
               onClearQueue={handleClearQueue}
               onRemoveItem={handleRemoveQueueItem}
+              onForceTranscribeItem={handleForceTranscribeItem}
             />
           </div>
         )}
@@ -580,10 +767,6 @@ export const App: React.FC = () => {
                       <button
                         key={pf.id}
                         onClick={() => {
-                          if (activeAudioUrlRef.current && activeAudioUrlRef.current !== pf.audioUrl) {
-                            URL.revokeObjectURL(activeAudioUrlRef.current);
-                          }
-                          activeAudioUrlRef.current = pf.audioUrl || null;
                           setActiveFile(pf);
                           setSpeakers(pf.speakers);
                         }}
@@ -652,16 +835,15 @@ export const App: React.FC = () => {
       />
 
       {activeFile && (
-        <>
-          <ExportModal
-            isOpen={isExportOpen}
-            onClose={() => setIsExportOpen(false)}
-            file={activeFile}
-            speakers={speakers}
-            allFiles={processedFiles}
-          />
-        </>
+        <ExportModal
+          isOpen={isExportOpen}
+          onClose={() => setIsExportOpen(false)}
+          file={activeFile}
+          speakers={speakers}
+          allFiles={processedFiles}
+        />
       )}
     </div>
   );
 };
+

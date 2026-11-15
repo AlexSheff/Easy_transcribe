@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { LocalEngineConfig, EngineBackendType } from '../types';
-import { ShieldCheck, CheckCircle2, XCircle, RefreshCw, Cpu, HardDrive } from 'lucide-react';
+import { ShieldCheck, CheckCircle2, XCircle, RefreshCw, Cpu, HardDrive, SkipForward } from 'lucide-react';
 
 interface ModelSettingsModalProps {
   isOpen: boolean;
@@ -26,9 +26,27 @@ export const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({
   const [minSilenceMs, setMinSilenceMs] = useState(config.minSilenceMs || 250);
   const [maxSpeakers, setMaxSpeakers] = useState(config.maxSpeakers ?? 3);
   const [exactSpeakers, setExactSpeakers] = useState(config.exactSpeakers ?? false);
+  const [skipExisting, setSkipExisting] = useState(config.skipExisting ?? true);
 
   const [testingStatus, setTestingStatus] = useState<'idle' | 'testing' | 'online' | 'offline'>('idle');
   const [testMessage, setTestMessage] = useState('');
+
+  useEffect(() => {
+    if (isOpen) {
+      setLocalPath(config.localModelPath || '/models/');
+      setBackend(config.backend);
+      setServerUrl(config.localServerUrl || 'http://127.0.0.1:8000');
+      setBlockRemote(config.blockRemoteDownloads);
+      setDevice(config.device || 'auto');
+      setBeamSize(config.beamSize || 5);
+      setMinSilenceMs(config.minSilenceMs || 250);
+      setMaxSpeakers(config.maxSpeakers ?? 3);
+      setExactSpeakers(config.exactSpeakers ?? false);
+      setSkipExisting(config.skipExisting ?? true);
+      setTestingStatus('idle');
+      setTestMessage('');
+    }
+  }, [isOpen, config]);
 
   if (!isOpen) return null;
 
@@ -64,6 +82,9 @@ export const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({
   };
 
   const handleSave = () => {
+    const safeBeam = Math.max(1, Math.min(10, Number.isFinite(beamSize) ? beamSize : 5));
+    const safeSilence = Math.max(150, Math.min(600, Number.isFinite(minSilenceMs) ? minSilenceMs : 250));
+    const safeMaxSpeakers = Math.max(1, Math.min(12, Number.isFinite(maxSpeakers) ? maxSpeakers : 3));
     const updated: LocalEngineConfig = {
       ...config,
       localModelPath: localPath.trim() || '/models/',
@@ -71,13 +92,17 @@ export const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({
       localServerUrl: (serverUrl || 'http://127.0.0.1:8000').trim(),
       blockRemoteDownloads: blockRemote,
       device,
-      beamSize,
-      minSilenceMs,
-      maxSpeakers,
+      beamSize: safeBeam,
+      minSilenceMs: safeSilence,
+      maxSpeakers: safeMaxSpeakers,
       exactSpeakers,
+      skipExisting,
     };
     onSaveConfig(updated);
-    onAddLog('SYSTEM', `Engine settings updated: Backend = ${backend}, MinSilence = ${minSilenceMs}ms, Speakers = ${exactSpeakers ? '' : '≤'}${maxSpeakers}`);
+    onAddLog(
+      'SYSTEM',
+      `Engine settings updated: Backend = ${backend}, MinSilence = ${safeSilence}ms, Speakers = ${exactSpeakers ? '' : '≤'}${safeMaxSpeakers}, SkipExisting = ${skipExisting ? 'ON' : 'OFF'}`
+    );
     onClose();
   };
 
@@ -128,6 +153,28 @@ export const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({
               </div>
               <p className="text-xs text-[#888899] mt-1">
                 Applies to the in-browser backend: when enabled, model weights are never downloaded and must exist locally. The Python server is always offline (HF_HUB_OFFLINE=1).
+              </p>
+            </div>
+          </div>
+
+          {/* Skip Already Transcribed Files Toggle */}
+          <div className="p-4 rounded-lg bg-[#1a1a24] border border-[#2a2a38] flex items-start gap-3">
+            <SkipForward className="w-5 h-5 text-[#00ffcc] mt-0.5 shrink-0" />
+            <div className="flex-1">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-white">Skip Already Transcribed Files (outputs)</span>
+                <label className="relative inline-flex items-center cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={skipExisting}
+                    onChange={(e) => setSkipExisting(e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-11 h-6 bg-[#333344] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#00ffcc]"></div>
+                </label>
+              </div>
+              <p className="text-xs text-[#888899] mt-1">
+                Checks <code className="text-[#00ffcc]">outputs/</code> and <code className="text-[#00ffcc]">transcripts/</code> before decoding audio. Files that already have a saved transcript are skipped automatically.
               </p>
             </div>
           </div>
@@ -310,7 +357,7 @@ export const ModelSettingsModal: React.FC<ModelSettingsModalProps> = ({
                 min="1"
                 max="10"
                 value={beamSize}
-                onChange={(e) => setBeamSize(parseInt(e.target.value, 10) || 5)}
+                onChange={(e) => setBeamSize(Math.max(1, Math.min(10, parseInt(e.target.value, 10) || 5)))}
                 className="w-full px-3 py-2 bg-[#09090d] border border-[#333344] rounded-lg text-white text-xs focus:outline-none focus:border-[#00ffcc]"
               />
             </div>

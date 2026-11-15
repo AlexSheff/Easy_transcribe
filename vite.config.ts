@@ -7,12 +7,13 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
-    host: 'localhost',
+    host: '0.0.0.0',
     port: 3000,
-    strictPort: true, // the Python server only allows the http://localhost:3000 origin
+    strictPort: true,
+    allowedHosts: true,
   },
   preview: {
-    host: 'localhost',
+    host: '0.0.0.0',
     port: 3000,
     strictPort: true,
   },

@@ -3,5 +3,8 @@
   "description": "Offline audio/video transcription with speaker diarization (local faster-whisper + SpeechBrain).",
   "requestFramePermissions": [
     "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]
 }
