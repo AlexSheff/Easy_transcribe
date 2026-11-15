@@ -10,18 +10,28 @@ The UI makes **no requests to external hosts**: no CDN scripts, no web fonts, no
 
 ## What it does
 
-- **Transcription** with [faster-whisper](https://github.com/SYSTRAN/faster-whisper): models `tiny`, `base`, `small`, `medium` (and any other `Systran/faster-whisper-*` model in your cache). Language auto-detect or fixed.
-- **Speaker diarization** with SpeechBrain ECAPA-TDNN embeddings + agglomerative clustering. Speakers are numbered by talk time (`Speaker 001` is the most active). Rename or merge them in the Speaker Manager.
-- **Batch queue**, in-browser media → 16 kHz WAV converter, microphone recorder, inline segment editor, audio scrubber.
-- **Export**: Markdown (several presets), SRT, JSON, plain text. Transcripts are saved automatically to `./outputs/` and `./transcripts/`, and files that already have a saved transcript in `outputs/` or `transcripts/` are automatically skipped in batch mode (with a one-click **Re-run** option).
-- **Optional in-browser backend** (transformers.js, no Python). Advanced: you must place the model files in `public/models/`. It has **no diarization** (single speaker).
+- **Transcription** with [faster-whisper](https://github.com/SYSTRAN/faster-whisper): models `tiny`, `base`, `small`, `medium`, `large-v3-turbo`, and `large-v3` (plus any other `Systran/faster-whisper-*` model in your cache).
+- **Language selection** (`auto` or explicit language code such as `ru`, `en`, `uk`, `de`, `fr`, etc.) selectable directly in the sidebar.
+- **Direct server-side media decoding & normalization**: audio/video files (`MP4`, `MKV`, `AVI`, `MOV`, `MP3`, `WAV`, `FLAC`, `M4A`, `OGG`, `WEBM`) stream straight to the local server without slow browser Web Audio decoding; optional `-18 dBFS` loudness normalization boosts quiet recordings before VAD.
+- **Speed & accuracy tuning**:
+  - `BatchedInferencePipeline` toggle for GPU throughput acceleration (automatic fallback to standard `transcribe` when unavailable).
+  - Selectable quantization / `compute_type` (`auto`, `float16`, `int8_float16`, `int8`).
+  - Tunable Silero VAD **Speech Threshold** and **Min Silence (Turns)**, optional `initial_prompt` (names/terminology) and `hotwords`, plus `hallucination_silence_threshold` when word timestamps are active.
+- **Speaker diarization** with SpeechBrain ECAPA-TDNN embeddings (mini-batch inference + sliding 2.5s windows for long utterances) + agglomerative clustering with configurable **Split Sensitivity** (`min_silhouette`). Speakers are numbered by talk time (`Speaker 001` is the most active). Rename/merge speakers globally or reassign individual segments inline.
+- **Real-time progress, cancellation & saved outputs**:
+  - Live server progress bar (`GET /api/progress`) and one-click **Cancel** (`POST /api/cancel`).
+  - Automatic saving to `./outputs/` and `./transcripts/` using your chosen Markdown preset (`standard`, `obsidian`, `meeting`, `clean`, `timestamps`).
+  - Batch queue automatically skips files already transcribed in `outputs/` or `transcripts/`, with **Open .MD** and **Re-run** controls, plus a **Browse Saved .MD** archive modal.
+  - Interactive word-level playback (click any word to seek, live word highlight, dotted underline for low-confidence words).
+- **Optional in-browser backend** (transformers.js, no Python). Advanced: place model files in `public/models/`. It has **no diarization** (single speaker).
 
 ### Known limitations
 
 - Diarization quality depends on the ECAPA model being present. Without it the server falls back to a weak acoustic diarizer and `/health` reports `acoustic-multifeature`. Overlapping speech is not handled.
-- The number of speakers is chosen automatically between 1 and **Max Speakers** (default 3, set in Engine Settings) using a silhouette score on the longer segments; it can never exceed the maximum. If it under-splits a conversation with a known number of people, tick "Exactly this many". If it splits a single speaker, raise `EASY_TSCRIBE_MIN_SILHOUETTE` (default `0.08`).
-- Speaker gender is **not** guessed. Semantic topic clustering was removed because it was not real.
-- Diarization of very short segments (< 0.6 s) is inherited from neighbouring segments.
+- Decoding non-WAV containers (`.mp4`, `.mkv`, `.mp3`, etc.) on the Python server uses PyAV (`av`, installed with `faster-whisper`) or `ffmpeg` if available on `PATH`.
+- The number of speakers is chosen automatically between 1 and **Max Speakers** (default 3, set in Engine Settings) using a silhouette score on the longer segments; it can never exceed the maximum. Adjust **Split Sensitivity** (`min_silhouette`, default `0.08`) or tick **Exact speaker count** when needed.
+- Speaker gender is **not** guessed.
+- Diarization of very short segments (< 0.6 s) is inherited from the temporally nearest embedded segment.
 
 ---
 
@@ -36,7 +46,7 @@ pip install -r requirements.txt
 
 # terminal 1: local engine (127.0.0.1:8000)
 python server_faster_whisper.py            # default model: medium
-python server_faster_whisper.py small      # or another cached model / a model directory
+python server_faster_whisper.py large-v3-turbo
 
 # terminal 2: UI
 npm run dev                                # http://localhost:3000
@@ -47,6 +57,15 @@ npm run dev                                # http://localhost:3000
 The model dropdown in the UI selects which cached faster-whisper model the server uses per request.
 `GET http://127.0.0.1:8000/health` lists the models the server found.
 
+### Server endpoints
+
+- `GET /health` — server status, cached Whisper models, active diarizer (`speechbrain-ecapa` or `acoustic-multifeature`).
+- `POST /transcribe` — streams raw media, runs transcription + diarization, auto-saves `.md`. Supports `model`, `language`, `device`, `compute_type`, `beam_size`, `min_silence_ms`, `vad_threshold`, `max_speakers`, `exact_speakers`, `min_silhouette`, `use_batched`, `normalize_audio`, `word_timestamps`, `initial_prompt`, `hotwords`, `skip_existing`, `job_id`.
+- `GET /api/progress?job_id=...` & `POST /api/cancel?job_id=...` — live job progress polling and cancellation.
+- `GET /api/check-transcript` / `POST /api/check-transcripts` — checks if a transcript already exists in `outputs/` or `transcripts/`.
+- `GET /api/transcripts` & `GET /api/transcript?path=...` — lists and reads saved transcripts safely within `outputs/` and `transcripts/`.
+- `POST /api/save-markdown` — saves edited or formatted Markdown into `transcripts/` and `outputs/`.
+
 ### Server configuration (environment variables)
 
 | Variable | Default | Purpose |
@@ -55,13 +74,14 @@ The model dropdown in the UI selects which cached faster-whisper model the serve
 | `EASY_TSCRIBE_ORIGINS` | – | Extra allowed browser origins (comma separated) |
 | `EASY_TSCRIBE_MAX_UPLOAD_MB` | `1024` | Upload size limit |
 | `EASY_TSCRIBE_MAX_SPEAKERS` | `3` | Default upper bound on speakers (the UI setting overrides it) |
-| `EASY_TSCRIBE_MIN_SILHOUETTE` | `0.08` | How clearly voices must separate before splitting into more than one speaker |
+| `EASY_TSCRIBE_MIN_SILHOUETTE` | `0.08` | Default minimum silhouette score to split speakers (UI overrides it) |
+| `EASY_TSCRIBE_OUTPUTS_DIR` | `./outputs` | Directory checked for existing transcripts and mirrored saves |
 
 ## Security model
 
 - The Python server binds to `127.0.0.1` only, accepts browser requests only from `http://localhost:3000` / `http://127.0.0.1:3000`, and rejects non-loopback `Host` headers (DNS-rebinding protection).
-- The Vite dev server listens on `localhost` only.
-- `transcripts/` is git-ignored. Do not commit recordings or transcripts.
+- File reads and writes under `outputs/` and `transcripts/` resolve canonical paths (`os.path.realpath`) to prevent directory traversal.
+- `transcripts/` and `outputs/` should not be committed with private recordings or transcripts.
 
 ## Development
 
@@ -80,8 +100,8 @@ Easy_transcribe/
 ├── tests/test_server.py       # server tests
 ├── scripts/copy-ort-wasm.js   # copies ONNX WASM locally for the in-browser backend
 ├── src/
-│   ├── App.tsx                # app state and layout
-│   ├── components/            # Sidebar, TranscriptView, BatchQueuePanel, modals...
+│   ├── App.tsx                # app state, queue runner, cancellation & layout
+│   ├── components/            # Sidebar, TranscriptView, BatchQueuePanel, SavedOutputsModal, modals...
 │   └── services/              # transcriptionEngine, audioConverter, exporter, whisperLoader
 ├── start.bat / run.bat / install.bat
 └── requirements.txt

@@ -1,4 +1,4 @@
-export type WhisperModelSize = 'tiny' | 'base' | 'small' | 'medium';
+export type WhisperModelSize = 'tiny' | 'base' | 'small' | 'medium' | 'large-v3' | 'large-v3-turbo';
 
 export type GenderType = 'Male' | 'Female' | 'Unknown';
 
@@ -69,6 +69,8 @@ export type MarkdownPreset = 'standard' | 'obsidian' | 'meeting' | 'clean' | 'ti
 
 export type EngineBackendType = 'local-faster-whisper' | 'offline-transformers';
 
+export type ComputeTypeOption = 'auto' | 'float16' | 'int8_float16' | 'int8';
+
 export interface LocalEngineConfig {
   backend: EngineBackendType;
   /** Python server URL (faster-whisper backend). */
@@ -78,14 +80,30 @@ export interface LocalEngineConfig {
   /** In-browser backend only: refuse to download model weights from the network. */
   blockRemoteDownloads: boolean;
   device?: 'cuda' | 'cpu' | 'auto';
+  computeType?: ComputeTypeOption;
   minSilenceMs?: number;
+  vadThreshold?: number;
   beamSize?: number;
   /** Upper bound on detected speakers (Python backend). */
   maxSpeakers?: number;
   /** If true, force exactly `maxSpeakers` speakers instead of auto-detecting up to that number. */
   exactSpeakers?: boolean;
+  /** Minimum silhouette score (0.02..0.35) required to split speakers. */
+  minSilhouette?: number;
   /** Skip files that already have a generated transcript in outputs/ or transcripts/. */
   skipExisting?: boolean;
+  /** Use BatchedInferencePipeline on GPU/supported models. */
+  useBatched?: boolean;
+  /** Normalize quiet audio before VAD and Whisper. */
+  normalizeAudio?: boolean;
+  /** Extract word-level timestamps & enable hallucination filtering. */
+  wordTimestamps?: boolean;
+  /** Optional vocabulary prompt for names, jargon, and acronyms. */
+  initialPrompt?: string;
+  /** Optional comma-separated hotwords boosted during decoding. */
+  hotwords?: string;
+  /** Markdown preset used when auto-saving transcripts. */
+  autoSavePreset?: MarkdownPreset;
 }
 
 export interface BatchFileItem {
@@ -93,7 +111,7 @@ export interface BatchFileItem {
   file: File;
   name: string;
   size: number;
-  status: 'queued' | 'checking' | 'processing' | 'completed' | 'skipped' | 'error';
+  status: 'queued' | 'checking' | 'processing' | 'completed' | 'skipped' | 'cancelled' | 'error';
   progress: number;
   stageMessage?: string;
   existingPath?: string;
@@ -101,3 +119,11 @@ export interface BatchFileItem {
   error?: string;
   result?: ProcessedFile;
 }
+
+export interface SavedTranscriptInfo {
+  filename: string;
+  relativePath: string;
+  size: number;
+  modifiedAt: string;
+}
+

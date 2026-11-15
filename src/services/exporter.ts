@@ -1,4 +1,4 @@
-import { ProcessedFile, SpeakerMetadata } from '../types';
+import { ProcessedFile, SpeakerMetadata, TranscriptSegment } from '../types';
 
 export type MarkdownPreset = 'standard' | 'obsidian' | 'meeting' | 'clean' | 'timestamps';
 
@@ -322,4 +322,252 @@ export function downloadTextFile(content: string, filename: string, mimeType = '
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const PARSED_SPEAKER_COLORS = [
+  '#00ffcc',
+  '#ff0077',
+  '#ffcc00',
+  '#0099ff',
+  '#a855f7',
+  '#22c55e',
+  '#f97316',
+];
+
+function parseClockToSeconds(clock: string): number {
+  const parts = clock.trim().replace(',', '.').split(':').map(Number);
+  if (parts.some((n) => Number.isNaN(n))) return 0;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return parts[0] || 0;
+}
+
+/**
+ * Parses a saved .md, .srt, .json, or .txt transcript from outputs/ or transcripts/
+ * back into a ProcessedFile so it can be viewed, searched, edited, and re-exported.
+ */
+export function parseMarkdownToProcessedFile(
+  filename: string,
+  _relativePath: string,
+  content: string
+): ProcessedFile {
+  const lower = filename.toLowerCase();
+
+  if (lower.endsWith('.json')) {
+    try {
+      const parsed = JSON.parse(content);
+      if (Array.isArray(parsed?.segments)) {
+        const speakers: Record<string, SpeakerMetadata> = parsed.speakers || {};
+        return {
+          id: `saved_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          filename: parsed.file?.name || filename,
+          fileSize: content.length,
+          duration: Number(parsed.file?.duration || 0),
+          segments: parsed.segments,
+          speakers,
+          processedAt: parsed.file?.processedAt || new Date().toISOString(),
+          language: 'auto',
+          modelUsed: parsed.file?.model || 'medium',
+        };
+      }
+    } catch {
+      /* fallback to text parser */
+    }
+  }
+
+  let body = content.replace(/\r\n/g, '\n');
+  let displayFilename = filename;
+  let processedAt = new Date().toISOString();
+
+  // Strip YAML frontmatter (Obsidian preset)
+  const fmMatch = body.match(/^---\n([\s\S]*?)\n---\n*/);
+  if (fmMatch) {
+    const fm = fmMatch[1];
+    const fileSrcMatch = fm.match(/^file_source:\s*"?(.*?)"?$/m);
+    const titleMatch = fm.match(/^title:\s*"?(.*?)"?$/m);
+    const dateMatch = fm.match(/^date:\s*"?(.*?)"?$/m);
+    if (fileSrcMatch?.[1]) displayFilename = fileSrcMatch[1];
+    else if (titleMatch?.[1]) displayFilename = titleMatch[1];
+    if (dateMatch?.[1]) processedAt = dateMatch[1];
+    body = body.slice(fmMatch[0].length);
+  }
+
+  const headerTitleMatch = body.match(/^#\s+(?:Transcript:\s+|Meeting Transcript:\s+|🎙️\s+)?(.+)$/m);
+  if (headerTitleMatch?.[1] && displayFilename === filename) {
+    displayFilename = headerTitleMatch[1].replace(/\s*\(Timecoded Transcript\)\s*$/, '').trim();
+  }
+
+  const speakersMap: Record<string, SpeakerMetadata> = {};
+  const nameToId = new Map<string, string>();
+  const getSpeakerId = (rawName: string): string => {
+    const name = (rawName || 'Speaker 001').trim();
+    const key = name.toLowerCase();
+    const existing = nameToId.get(key);
+    if (existing) {
+      speakersMap[existing].sampleCount += 1;
+      return existing;
+    }
+    const idx = nameToId.size + 1;
+    const id = `speaker_${String(idx).padStart(3, '0')}`;
+    nameToId.set(key, id);
+    speakersMap[id] = {
+      id,
+      name,
+      gender: 'Unknown',
+      sampleCount: 1,
+      color: PARSED_SPEAKER_COLORS[(idx - 1) % PARSED_SPEAKER_COLORS.length],
+    };
+    return id;
+  };
+
+  const rawSegments: Array<{ start: number; end?: number; speakerName: string; text: string }> = [];
+
+  if (lower.endsWith('.srt')) {
+    const blocks = body.split(/\n{2,}/);
+    for (const block of blocks) {
+      const lines = block.trim().split('\n');
+      const timeLineIdx = lines.findIndex((l) => l.includes('-->'));
+      if (timeLineIdx === -1) continue;
+      const [sStr, eStr] = lines[timeLineIdx].split('-->').map((s) => s.trim());
+      const start = parseClockToSeconds(sStr);
+      const end = parseClockToSeconds(eStr);
+      let text = lines.slice(timeLineIdx + 1).join(' ').trim();
+      let speakerName = 'Speaker 001';
+      const spkMatch = text.match(/^\[([^\]]+)\]\s*(.*)$/);
+      if (spkMatch) {
+        speakerName = spkMatch[1].trim();
+        text = spkMatch[2].trim();
+      }
+      if (text) rawSegments.push({ start, end, speakerName, text });
+    }
+  } else {
+    const lines = body.split('\n');
+    let pendingTimecoded: { start: number; end?: number; speakerName: string } | null = null;
+    let pendingObsidian: { start: number; speakerName: string } | null = null;
+
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) {
+        pendingTimecoded = null;
+        pendingObsidian = null;
+        continue;
+      }
+
+      // 1. Standard / Meeting: **[00:01:23] Speaker 001:** text
+      let m = line.match(/^\*\*\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s+(.+?):\*\*\s*(.+)$/);
+      if (m) {
+        rawSegments.push({ start: parseClockToSeconds(m[1]), speakerName: m[2], text: m[3] });
+        pendingTimecoded = null;
+        pendingObsidian = null;
+        continue;
+      }
+
+      // 2. Clean dialogue: **Speaker 001** [00:01:23]: text  OR  **Speaker 001**: text
+      m = line.match(/^\*\*(.+?)\*\*\s*(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\])?:\s*(.+)$/);
+      if (m) {
+        rawSegments.push({
+          start: m[2] ? parseClockToSeconds(m[2]) : rawSegments.length * 3,
+          speakerName: m[1],
+          text: m[3],
+        });
+        pendingTimecoded = null;
+        pendingObsidian = null;
+        continue;
+      }
+
+      // 3. Timecoded header: `[00:01:23 - 00:01:28]` **Speaker 001** (#1):
+      m = line.match(/^`\[(\d{1,2}:\d{2}(?::\d{2})?)\s*-\s*(\d{1,2}:\d{2}(?::\d{2})?)\]`\s*\*\*(.+?)\*\*/);
+      if (m) {
+        pendingTimecoded = {
+          start: parseClockToSeconds(m[1]),
+          end: parseClockToSeconds(m[2]),
+          speakerName: m[3],
+        };
+        pendingObsidian = null;
+        continue;
+      }
+      if (pendingTimecoded && line.startsWith('>')) {
+        const quoteText = line.replace(/^>\s*/, '').trim();
+        if (quoteText) {
+          rawSegments.push({
+            start: pendingTimecoded.start,
+            end: pendingTimecoded.end,
+            speakerName: pendingTimecoded.speakerName,
+            text: quoteText,
+          });
+        }
+        pendingTimecoded = null;
+        continue;
+      }
+
+      // 4. Obsidian header: **`00:01:23`** **Speaker 001**:
+      m = line.match(/^\*\*`(\d{1,2}:\d{2}(?::\d{2})?)`\*\*\s+\*\*(.+?)\*\*:?$/);
+      if (m) {
+        pendingObsidian = { start: parseClockToSeconds(m[1]), speakerName: m[2] };
+        pendingTimecoded = null;
+        continue;
+      }
+      if (pendingObsidian && !line.startsWith('#') && !line.startsWith('|')) {
+        rawSegments.push({
+          start: pendingObsidian.start,
+          speakerName: pendingObsidian.speakerName,
+          text: line,
+        });
+        pendingObsidian = null;
+        continue;
+      }
+
+      // 5. Plain text: [00:01:23] Speaker 001: text
+      m = line.match(/^\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s+([^:]+):\s*(.+)$/);
+      if (m) {
+        rawSegments.push({ start: parseClockToSeconds(m[1]), speakerName: m[2], text: m[3] });
+      }
+    }
+  }
+
+  const segments: TranscriptSegment[] = rawSegments.map((seg, idx) => {
+    const nextStart = rawSegments[idx + 1]?.start;
+    const end = seg.end !== undefined
+      ? Math.max(seg.start + 0.3, seg.end)
+      : nextStart !== undefined && nextStart > seg.start
+      ? nextStart
+      : seg.start + 3;
+    return {
+      id: `seg_${idx + 1}`,
+      start: seg.start,
+      end,
+      text: seg.text,
+      speakerId: getSpeakerId(seg.speakerName),
+      gender: 'Unknown',
+      uncertain: false,
+      words: [],
+    };
+  });
+
+  if (segments.length === 0) {
+    const plain = body.trim() || '(Empty transcript)';
+    segments.push({
+      id: 'seg_1',
+      start: 0,
+      end: 1,
+      text: plain,
+      speakerId: getSpeakerId('Speaker 001'),
+      gender: 'Unknown',
+      uncertain: false,
+      words: [],
+    });
+  }
+
+  const duration = segments.reduce((max, s) => Math.max(max, s.end), 0);
+  return {
+    id: `saved_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    filename: displayFilename,
+    fileSize: content.length,
+    duration,
+    segments,
+    speakers: speakersMap,
+    processedAt,
+    language: 'auto',
+    modelUsed: 'medium',
+  };
 }

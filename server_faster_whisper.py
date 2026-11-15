@@ -37,6 +37,7 @@ import math
 import wave
 import tempfile
 import threading
+import subprocess
 import urllib.parse
 import warnings
 from collections import Counter
@@ -140,7 +141,7 @@ def list_local_whisper_models(hub_root=None):
         name = os.path.basename(path)[len(prefix):]
         if find_snapshot_dir(hub_root, prefix + name):
             names.append(name)
-    order = {"tiny": 0, "base": 1, "small": 2, "medium": 3}
+    order = {"tiny": 0, "base": 1, "small": 2, "medium": 3, "large-v3": 4, "large-v3-turbo": 5}
     return sorted(names, key=lambda n: (order.get(n, 99), n))
 
 
@@ -173,12 +174,44 @@ SNAPSHOT_SPEECHBRAIN_ECAPA = find_snapshot_dir(HF_HUB, "models--speechbrain--spk
 # ---------------------------------------------------------------------------
 
 default_model_ref = DEFAULT_MODEL
-_whisper_cache = {}                     # (model_path, device) -> WhisperModel
+_whisper_cache = {}                     # (model_path, device, compute_type) -> WhisperModel
 _model_load_lock = threading.Lock()
 TRANSCRIBE_LOCK = threading.Lock()      # one transcription at a time (GPU/RAM safety)
 
+_ACTIVE_JOBS = {}                       # job_id -> {"progress": int, "stage": str, "cancelled": bool}
+_JOBS_LOCK = threading.Lock()
+
 diarizer_model = None
 diarizer_type = "none"
+
+
+def set_job_progress(job_id, progress, stage):
+    if not job_id:
+        return
+    with _JOBS_LOCK:
+        job = _ACTIVE_JOBS.setdefault(job_id, {"progress": 0, "stage": "", "cancelled": False})
+        job["progress"] = int(max(0, min(100, progress)))
+        job["stage"] = str(stage)
+
+
+def is_job_cancelled(job_id):
+    if not job_id:
+        return False
+    with _JOBS_LOCK:
+        job = _ACTIVE_JOBS.get(job_id)
+        return bool(job and job.get("cancelled"))
+
+
+def cancel_job(job_id):
+    if not job_id:
+        return False
+    with _JOBS_LOCK:
+        job = _ACTIVE_JOBS.get(job_id)
+        if job is None:
+            return False
+        job["cancelled"] = True
+        job["stage"] = "Cancelling..."
+        return True
 
 
 def pick_device(requested="auto"):
@@ -191,11 +224,13 @@ def pick_device(requested="auto"):
         return "cpu"
 
 
-def get_whisper_model(model_ref, device="auto"):
+def get_whisper_model(model_ref, device="auto", compute_type="auto"):
     """Loads (and caches) a faster-whisper model."""
     model_path = resolve_whisper_model(model_ref)
     device = pick_device(device)
-    key = (model_path, device)
+    if compute_type not in ("float16", "int8_float16", "int8", "float32"):
+        compute_type = "float16" if device == "cuda" else "int8"
+    key = (model_path, device, compute_type)
     with _model_load_lock:
         if key in _whisper_cache:
             return _whisper_cache[key]
@@ -205,7 +240,6 @@ def get_whisper_model(model_ref, device="auto"):
         except ImportError:
             raise RuntimeError("Package 'faster-whisper' is not installed. Run: pip install -r requirements.txt")
 
-        compute_type = "float16" if device == "cuda" else "int8"
         print(f"[*] Loading Whisper '{model_path}' on {device} ({compute_type})...")
         try:
             model = WhisperModel(model_path, device=device, compute_type=compute_type, local_files_only=True)
@@ -314,6 +348,123 @@ def load_wav(wav_path):
     return samples, framerate
 
 
+def write_pcm16_wav(samples, sr, dst_path):
+    """Writes float32 mono samples (-1..1) as a standard 16-bit PCM WAV."""
+    import numpy as np
+    clipped = np.clip(samples, -1.0, 1.0)
+    pcm = (clipped * 32767.0).astype("<i2")
+    with wave.open(dst_path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(int(sr))
+        wf.writeframes(pcm.tobytes())
+
+
+def normalize_audio_samples(samples):
+    """Brings quiet recordings up to ~-18 dBFS RMS without clipping peaks."""
+    import numpy as np
+    if len(samples) == 0:
+        return samples
+    rms = float(np.sqrt(np.mean(samples * samples)))
+    peak = float(np.max(np.abs(samples)))
+    if rms < 1e-5 or peak < 1e-5:
+        return samples
+    target_rms = 0.125  # ~ -18 dBFS
+    gain = min(target_rms / rms, 0.95 / peak, 12.0)
+    if gain <= 1.05:
+        return samples
+    return np.clip(samples * gain, -0.98, 0.98).astype(np.float32)
+
+
+def _resample_linear(samples, src_sr, dst_sr=16000):
+    import numpy as np
+    if src_sr == dst_sr or len(samples) < 2:
+        return samples
+    new_len = max(1, int(round(len(samples) * float(dst_sr) / float(src_sr))))
+    x_old = np.linspace(0.0, 1.0, len(samples), endpoint=False)
+    x_new = np.linspace(0.0, 1.0, new_len, endpoint=False)
+    return np.interp(x_new, x_old, samples).astype(np.float32)
+
+
+def prepare_16k_wav(src_path, normalize=False):
+    """
+    Ensures `src_path` is converted into a 16 kHz mono 16-bit PCM WAV.
+    Supports native PCM WAV directly (with optional resampling/normalization) and
+    falls back to PyAV (`av`) or `ffmpeg` for MP4/MKV/MP3/M4A/WEBM/OGG/FLAC.
+    Returns (wav_path, temp_path_to_cleanup_or_None).
+    """
+    # 1. Fast path: already a PCM WAV
+    try:
+        samples, sr = load_wav(src_path)
+        if sr == 16000 and not normalize:
+            return src_path, None
+        if sr != 16000:
+            samples = _resample_linear(samples, sr, 16000)
+        if normalize:
+            samples = normalize_audio_samples(samples)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as out:
+            dst = out.name
+        write_pcm16_wav(samples, 16000, dst)
+        return dst, dst
+    except (wave.Error, EOFError):
+        pass
+
+    # 2. Try PyAV (installed alongside faster-whisper)
+    try:
+        import av
+        import numpy as np
+        chunks = []
+        with av.open(src_path) as container:
+            audio_streams = [s for s in container.streams if s.type == "audio"]
+            if not audio_streams:
+                raise ValueError("Media file contains no audio stream")
+            resampler = av.AudioResampler(format="flt", layout="mono", rate=16000)
+            for frame in container.decode(audio_streams[0]):
+                for resampled in resampler.resample(frame):
+                    arr = resampled.to_ndarray().reshape(-1).astype(np.float32)
+                    if len(arr) > 0:
+                        chunks.append(arr)
+            for resampled in resampler.resample(None):
+                arr = resampled.to_ndarray().reshape(-1).astype(np.float32)
+                if len(arr) > 0:
+                    chunks.append(arr)
+        if not chunks:
+            raise ValueError("Decoded audio stream is empty")
+        samples = np.concatenate(chunks)
+        if normalize:
+            samples = normalize_audio_samples(samples)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as out:
+            dst = out.name
+        write_pcm16_wav(samples, 16000, dst)
+        return dst, dst
+    except ImportError:
+        pass
+    except Exception as av_err:
+        print(f"[!] PyAV decode failed ({av_err}), trying ffmpeg...")
+
+    # 3. Fallback to ffmpeg CLI if installed on PATH
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if ffmpeg_bin:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as out:
+            dst = out.name
+        cmd = [ffmpeg_bin, "-y", "-i", src_path, "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", dst]
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if proc.returncode == 0 and os.path.isfile(dst) and os.path.getsize(dst) > 44:
+            if normalize:
+                samples, sr = load_wav(dst)
+                write_pcm16_wav(normalize_audio_samples(samples), sr, dst)
+            return dst, dst
+        if os.path.exists(dst):
+            try:
+                os.remove(dst)
+            except Exception:
+                pass
+
+    raise ValueError(
+        "Could not decode media file. Send a WAV file, or install PyAV ('pip install av') / ffmpeg on PATH."
+    )
+
+
 def slice_samples(samples, sr, start_sec, end_sec):
     start = max(0, int(start_sec * sr))
     end = min(len(samples), int(end_sec * sr))
@@ -400,6 +551,87 @@ def embed_segment(samples, sr):
     return features, f0
 
 
+_DEFAULT_EMBED_SEGMENT = embed_segment
+
+
+def embed_segments_ecapa_batch(chunks, sr, batch_size=16):
+    """
+    Computes L2-normalized ECAPA-TDNN embeddings in mini-batches for speed.
+    Long chunks (>4.5s) are averaged across overlapping 2.5s windows for cleaner speaker vectors.
+    """
+    import numpy as np
+    import torch
+
+    results = [None] * len(chunks)
+    pitches = [0.0] * len(chunks)
+    work_items = []  # (orig_idx, window_samples)
+
+    win_len = int(sr * 2.5)
+    hop_len = int(sr * 1.25)
+    long_thresh = int(sr * 4.5)
+
+    for idx, chunk in enumerate(chunks):
+        if chunk is None or len(chunk) < int(sr * MIN_EMBED_SEC):
+            continue
+        _, f0 = compute_acoustic_features(chunk, sr)
+        pitches[idx] = f0
+        if len(chunk) > long_thresh:
+            for start in range(0, len(chunk) - int(sr * 1.0), hop_len):
+                sub = chunk[start:min(len(chunk), start + win_len)]
+                if len(sub) >= int(sr * MIN_EMBED_SEC):
+                    work_items.append((idx, sub))
+        else:
+            work_items.append((idx, chunk))
+
+    if not work_items:
+        return results, pitches
+
+    # Sort by length so padding inside each batch is minimal
+    work_items.sort(key=lambda item: len(item[1]))
+    accum = {}
+    counts = {}
+
+    for b_start in range(0, len(work_items), batch_size):
+        batch = work_items[b_start:b_start + batch_size]
+        max_len = max(len(w[1]) for w in batch)
+        batch_tensor = torch.zeros((len(batch), max_len), dtype=torch.float32)
+        wav_lens = torch.zeros(len(batch), dtype=torch.float32)
+        for j, (_, arr) in enumerate(batch):
+            t = torch.from_numpy(arr.astype(np.float32, copy=False))
+            batch_tensor[j, :len(arr)] = t
+            wav_lens[j] = float(len(arr)) / float(max_len)
+
+        with torch.no_grad():
+            try:
+                embs = diarizer_model.encode_batch(batch_tensor, wav_lens)
+            except TypeError:
+                embs = diarizer_model.encode_batch(batch_tensor)
+            embs_np = embs.squeeze(1).cpu().numpy() if embs.ndim == 3 else embs.cpu().numpy()
+            if embs_np.ndim == 1:
+                embs_np = embs_np[None, :]
+
+        for j, (orig_idx, _) in enumerate(batch):
+            vec = embs_np[j]
+            norm = np.linalg.norm(vec)
+            if norm > 1e-6:
+                vec = vec / norm
+            if orig_idx in accum:
+                accum[orig_idx] = accum[orig_idx] + vec
+                counts[orig_idx] += 1
+            else:
+                accum[orig_idx] = vec
+                counts[orig_idx] = 1
+
+    for orig_idx, vec_sum in accum.items():
+        avg = vec_sum / max(1, counts[orig_idx])
+        norm = np.linalg.norm(avg)
+        if norm > 1e-6:
+            avg = avg / norm
+        results[orig_idx] = avg
+
+    return results, pitches
+
+
 def _cosine_sims(matrix, centroids):
     import numpy as np
     m = matrix / (np.linalg.norm(matrix, axis=1, keepdims=True) + 1e-9)
@@ -407,7 +639,7 @@ def _cosine_sims(matrix, centroids):
     return m @ c.T
 
 
-def cluster_speakers(embeddings, durations, max_speakers, exact=False):
+def cluster_speakers(embeddings, durations, max_speakers, exact=False, min_silhouette=None):
     """
     Assigns a speaker label to every embedding, never using more than `max_speakers` labels.
 
@@ -425,6 +657,8 @@ def cluster_speakers(embeddings, durations, max_speakers, exact=False):
     max_speakers = max(1, int(max_speakers))
     if n < 2 or max_speakers == 1:
         return [0] * n
+
+    min_sil = MIN_SILHOUETTE if min_silhouette is None else float(min_silhouette)
 
     try:
         from sklearn.cluster import AgglomerativeClustering
@@ -460,8 +694,8 @@ def cluster_speakers(embeddings, durations, max_speakers, exact=False):
             print(f"    k={k}: silhouette={score:.3f}")
             if score > best_score:
                 best_k, best_labels, best_score = k, labels_k, score
-        if best_score < MIN_SILHOUETTE:
-            print(f"[*] Speakers are not clearly separable (best silhouette {best_score:.3f} < {MIN_SILHOUETTE}); using 1 speaker.")
+        if best_score < min_sil:
+            print(f"[*] Speakers are not clearly separable (best silhouette {best_score:.3f} < {min_sil}); using 1 speaker.")
             return [0] * n
         print(f"[*] Selected {best_k} speaker(s) (silhouette {best_score:.3f}, max {max_speakers}).")
 
@@ -490,10 +724,10 @@ def cluster_speakers(embeddings, durations, max_speakers, exact=False):
     return [remap[int(c)] for c in labels]
 
 
-def perform_speaker_diarization(samples, sr, raw_segments, max_speakers=None, exact=False):
+def perform_speaker_diarization(samples, sr, raw_segments, max_speakers=None, exact=False, min_silhouette=None):
     """
     Groups transcript segments into speakers ("Speaker 001" = the one with most segments).
-    Segments too short to embed inherit the label of the nearest embedded segment.
+    Segments too short to embed inherit the label of the nearest embedded segment by timestamp.
     Returns (segments, speaker_metadata).
     """
     import numpy as np
@@ -505,26 +739,45 @@ def perform_speaker_diarization(samples, sr, raw_segments, max_speakers=None, ex
     print(f"[*] Computing speaker embeddings for {len(raw_segments)} segments "
           f"(engine: {diarizer_type}, max speakers: {max_speakers}{', exact' if exact else ''})...")
 
+    chunks = [slice_samples(samples, sr, seg["start"], seg["end"]) for seg in raw_segments]
     embeddings, durations, pitches, embedded_idx = [], [], [], []
-    for idx, seg in enumerate(raw_segments):
-        chunk = slice_samples(samples, sr, seg["start"], seg["end"])
-        emb, f0 = embed_segment(chunk, sr)
-        pitches.append(f0)
-        if emb is not None:
-            embeddings.append(emb)
-            durations.append(len(chunk) / sr)
-            embedded_idx.append(idx)
+
+    if (
+        diarizer_type == "speechbrain-ecapa"
+        and diarizer_model is not None
+        and embed_segment is _DEFAULT_EMBED_SEGMENT
+    ):
+        try:
+            batch_embs, pitches = embed_segments_ecapa_batch(chunks, sr)
+            for idx, emb in enumerate(batch_embs):
+                if emb is not None:
+                    embeddings.append(emb)
+                    durations.append(len(chunks[idx]) / sr)
+                    embedded_idx.append(idx)
+        except Exception as e:
+            print(f"[!] Batched ECAPA failed ({e}), falling back to per-segment embedding...")
+            embeddings, durations, pitches, embedded_idx = [], [], [], []
+
+    if not pitches:
+        for idx, chunk in enumerate(chunks):
+            emb, f0 = embed_segment(chunk, sr)
+            pitches.append(f0)
+            if emb is not None:
+                embeddings.append(emb)
+                durations.append(len(chunk) / sr)
+                embedded_idx.append(idx)
 
     labels = [0] * len(raw_segments)
     if embeddings:
-        emb_labels = cluster_speakers(embeddings, durations, max_speakers, exact)
+        emb_labels = cluster_speakers(embeddings, durations, max_speakers, exact, min_silhouette=min_silhouette)
         assigned = {i: lab for i, lab in zip(embedded_idx, emb_labels)}
+        midpoints = [(float(s["start"]) + float(s["end"])) * 0.5 for s in raw_segments]
         for idx in range(len(raw_segments)):
             if idx in assigned:
                 labels[idx] = assigned[idx]
             else:
-                # Too short to embed: inherit from the nearest embedded segment.
-                nearest = min(embedded_idx, key=lambda j: abs(j - idx))
+                # Too short to embed: inherit from the temporally nearest embedded segment.
+                nearest = min(embedded_idx, key=lambda j: abs(midpoints[j] - midpoints[idx]))
                 labels[idx] = assigned[nearest]
 
     cluster_counts = Counter(labels)
@@ -702,6 +955,75 @@ def write_transcript_file(filename, content):
     return target, base
 
 
+def list_saved_transcripts():
+    """Lists transcript files in OUTPUTS_DIR and TRANSCRIPTS_DIR, newest first."""
+    items = []
+    seen_rel = set()
+    allowed_exts = (".md", ".txt", ".srt", ".json")
+    for directory, label in _output_search_dirs():
+        if not os.path.isdir(directory):
+            continue
+        root = os.path.realpath(directory)
+        try:
+            with os.scandir(root) as it:
+                for entry in it:
+                    if not entry.is_file() or not entry.name.lower().endswith(allowed_exts):
+                        continue
+                    target = os.path.realpath(entry.path)
+                    if os.path.dirname(target) != root:
+                        continue
+                    stat = entry.stat()
+                    if stat.st_size <= 0:
+                        continue
+                    rel = f"{label}/{entry.name}"
+                    if rel in seen_rel:
+                        continue
+                    seen_rel.add(rel)
+                    items.append({
+                        "filename": entry.name,
+                        "relativePath": rel,
+                        "size": stat.st_size,
+                        "modifiedAt": datetime.datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        "_mtime": stat.st_mtime,
+                    })
+        except OSError:
+            continue
+    items.sort(key=lambda x: x["_mtime"], reverse=True)
+    for item in items:
+        item.pop("_mtime", None)
+    return items
+
+
+def read_saved_transcript(relative_path):
+    """Safely reads a saved transcript referenced as 'outputs/...' or 'transcripts/...'."""
+    rel = str(relative_path or "").replace("\\", "/").lstrip("/")
+    if "/" not in rel:
+        raise ValueError("Invalid transcript path")
+    label, filename = rel.split("/", 1)
+    if label not in ("outputs", "transcripts") or not filename or "/" in filename or filename in (".", ".."):
+        raise ValueError("Invalid transcript path")
+
+    dir_map = {lbl: path for path, lbl in _output_search_dirs()}
+    directory = dir_map.get(label)
+    if not directory or not os.path.isdir(directory):
+        raise FileNotFoundError("Transcript directory not found")
+
+    root = os.path.realpath(directory)
+    target = os.path.realpath(os.path.join(root, filename))
+    if os.path.dirname(target) != root or not os.path.isfile(target):
+        raise FileNotFoundError("Transcript file not found")
+    if os.path.getsize(target) > 20 * 1024 * 1024:
+        raise ValueError("Transcript file too large to preview")
+
+    with open(target, "r", encoding="utf-8", errors="replace") as f:
+        content = f.read()
+    return {
+        "filename": os.path.basename(target),
+        "relativePath": f"{label}/{os.path.basename(target)}",
+        "content": content,
+    }
+
+
 # ---------------------------------------------------------------------------
 # HTTP layer
 # ---------------------------------------------------------------------------
@@ -810,17 +1132,47 @@ class TranscribeHandler(BaseHTTPRequestHandler):
                 })
             else:
                 self._json(200, {"exists": False})
+        elif path in ("/api/transcripts", "/transcripts"):
+            self._json(200, {"items": list_saved_transcripts()})
+        elif path in ("/api/transcript", "/transcript"):
+            params = urllib.parse.parse_qs(parsed.query)
+            rel_path = (params.get("path") or [""])[0]
+            try:
+                self._json(200, read_saved_transcript(rel_path))
+            except FileNotFoundError as err:
+                self._json(404, {"error": str(err)})
+            except ValueError as err:
+                self._json(400, {"error": str(err)})
+        elif path in ("/api/progress", "/progress"):
+            params = urllib.parse.parse_qs(parsed.query)
+            job_id = (params.get("job_id") or [""])[0]
+            with _JOBS_LOCK:
+                job = _ACTIVE_JOBS.get(job_id)
+                if not job:
+                    self._json(200, {"active": False, "progress": 0, "stage": "", "cancelled": False})
+                else:
+                    self._json(200, {
+                        "active": True,
+                        "progress": job["progress"],
+                        "stage": job["stage"],
+                        "cancelled": job["cancelled"],
+                    })
         else:
             self._json(404, {"error": "Not found"})
 
     def do_POST(self):
         if not self._guard():
             return
-        path = urllib.parse.urlparse(self.path).path
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
         if path in ("/api/check-transcripts", "/check-transcripts"):
             return self._handle_check_transcripts()
         if path in ("/api/save-markdown", "/save-markdown"):
             return self._handle_save_markdown()
+        if path in ("/api/cancel", "/cancel"):
+            params = urllib.parse.parse_qs(parsed.query)
+            job_id = (params.get("job_id") or [""])[0]
+            return self._json(200, {"cancelled": cancel_job(job_id)})
         if path in ("/transcribe", "/api/transcribe"):
             return self._handle_transcribe()
         self._json(404, {"error": "Not found"})
@@ -871,6 +1223,8 @@ class TranscribeHandler(BaseHTTPRequestHandler):
 
     def _handle_transcribe(self):
         tmp_path = None
+        prepared_cleanup_path = None
+        job_id = None
         try:
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
 
@@ -881,23 +1235,41 @@ class TranscribeHandler(BaseHTTPRequestHandler):
                 min_silence_ms = max(50, min(5000, int(p("min_silence_ms", 250))))
                 beam_size = max(1, min(10, int(p("beam_size", 5))))
                 max_speakers = max(1, min(12, int(p("max_speakers", DEFAULT_MAX_SPEAKERS))))
+                vad_threshold = max(0.05, min(0.95, float(p("vad_threshold", 0.35))))
+                min_silhouette = max(0.01, min(0.50, float(p("min_silhouette", MIN_SILHOUETTE))))
+                batch_size = max(1, min(32, int(p("batch_size", 8))))
                 exact_speakers = p("exact_speakers", "0") in ("1", "true", "True")
                 skip_existing = p("skip_existing", "0") in ("1", "true", "True")
+                use_batched = p("use_batched", "0") in ("1", "true", "True")
+                normalize_audio = p("normalize_audio", "0") in ("1", "true", "True")
+                word_timestamps = p("word_timestamps", "1") not in ("0", "false", "False")
             except ValueError:
                 self.close_connection = True
                 return self._json(400, {"error": "Invalid numeric query parameter"})
 
             model_name = p("model") or default_model_ref
             device = p("device", "auto")
+            compute_type = p("compute_type", "auto")
             language = p("language")
             if language in (None, "", "auto"):
                 language = None
             source_name = p("filename", f"audio_{int(time.time())}.wav")
+            initial_prompt = (p("initial_prompt") or "").strip()[:1000]
+            hotwords = (p("hotwords") or "").strip()[:500]
+            job_id = (p("job_id") or "").strip()[:80] or None
 
             if skip_existing:
                 existing = find_existing_transcript(source_name)
                 if existing:
-                    self.close_connection = True
+                    rem = self._content_length()
+                    if 0 < rem <= 4 * 1024 * 1024:
+                        while rem > 0:
+                            chunk = self.rfile.read(min(1024 * 1024, rem))
+                            if not chunk:
+                                break
+                            rem -= len(chunk)
+                    else:
+                        self.close_connection = True
                     return self._json(200, {
                         "status": "skipped",
                         "skipped": True,
@@ -920,8 +1292,15 @@ class TranscribeHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 raise
 
+            if job_id:
+                set_job_progress(job_id, 10, f"Receiving {source_name}...")
+
+            ext = os.path.splitext(os.path.basename(source_name))[1]
+            if not ext or not all(c.isalnum() or c == "." for c in ext):
+                ext = ".wav"
+
             # Stream the upload to disk (no second copy in RAM).
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
                 tmp_path = tmp.name
                 remaining = length
                 while remaining > 0:
@@ -934,30 +1313,74 @@ class TranscribeHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return self._json(400, {"error": "Incomplete upload"})
 
+            if is_job_cancelled(job_id):
+                return self._json(499, {"status": "cancelled", "error": "Cancelled by user"})
+
+            if job_id:
+                set_job_progress(job_id, 22, "Decoding & normalizing 16kHz audio...")
+
+            try:
+                wav_path, prepared_cleanup_path = prepare_16k_wav(tmp_path, normalize=normalize_audio)
+            except (ValueError, wave.Error) as dec_err:
+                return self._json(400, {"status": "error", "error": str(dec_err)})
+
             print(f"[*] Processing '{source_name}' ({length} bytes, model={model_name}, "
-                  f"lang={language or 'auto'}, min_silence={min_silence_ms}ms)...")
+                  f"lang={language or 'auto'}, min_silence={min_silence_ms}ms, vad={vad_threshold})...")
 
             with TRANSCRIBE_LOCK:
-                whisper_model = get_whisper_model(model_name, device)
-                segments_generator, info = whisper_model.transcribe(
-                    tmp_path,
-                    beam_size=beam_size,
-                    best_of=5,
-                    patience=1.0,
-                    temperature=[0.0, 0.2, 0.4],
-                    condition_on_previous_text=False,
-                    word_timestamps=True,
-                    language=language,
-                    vad_filter=True,
-                    vad_parameters=dict(
+                if is_job_cancelled(job_id):
+                    return self._json(499, {"status": "cancelled", "error": "Cancelled by user"})
+
+                if job_id:
+                    set_job_progress(job_id, 30, f"Loading Whisper ({model_name})...")
+                whisper_model = get_whisper_model(model_name, device, compute_type)
+
+                transcribe_kwargs = {
+                    "beam_size": beam_size,
+                    "best_of": 5,
+                    "patience": 1.0,
+                    "temperature": [0.0, 0.2, 0.4],
+                    "condition_on_previous_text": False,
+                    "word_timestamps": word_timestamps,
+                    "language": language,
+                    "vad_filter": True,
+                    "vad_parameters": dict(
                         min_silence_duration_ms=min_silence_ms,
                         speech_pad_ms=200,
-                        threshold=0.35,
+                        threshold=vad_threshold,
                     ),
-                )
+                }
+                if initial_prompt:
+                    transcribe_kwargs["initial_prompt"] = initial_prompt
+                if hotwords:
+                    transcribe_kwargs["hotwords"] = hotwords
+                if word_timestamps:
+                    transcribe_kwargs["hallucination_silence_threshold"] = 2.0
+
+                segments_generator = None
+                info = None
+                if use_batched and hasattr(whisper_model, "model"):
+                    try:
+                        from faster_whisper import BatchedInferencePipeline
+                        batched_pipe = BatchedInferencePipeline(model=whisper_model)
+                        batched_kwargs = dict(transcribe_kwargs)
+                        batched_kwargs["batch_size"] = batch_size
+                        segments_generator, info = batched_pipe.transcribe(wav_path, **batched_kwargs)
+                    except Exception as batch_err:
+                        print(f"[!] BatchedInferencePipeline fallback to standard transcribe: {batch_err}")
+                        segments_generator = None
+
+                if segments_generator is None:
+                    segments_generator, info = whisper_model.transcribe(wav_path, **transcribe_kwargs)
+
+                total_dur = max(0.1, float(getattr(info, "duration", 0.0) or 0.1))
+                if job_id:
+                    set_job_progress(job_id, 35, "Transcribing speech...")
 
                 raw_results = []
                 for seg in segments_generator:
+                    if is_job_cancelled(job_id):
+                        return self._json(499, {"status": "cancelled", "error": "Cancelled by user"})
                     words = [
                         {
                             "word": w.word,
@@ -978,16 +1401,28 @@ class TranscribeHandler(BaseHTTPRequestHandler):
                         "confidence": confidence,
                         "words": words,
                     })
+                    if job_id:
+                        pct = 35 + int(47 * min(1.0, float(seg.end) / total_dur))
+                        set_job_progress(job_id, pct, f"Transcribing {int(seg.end)}s / {int(total_dur)}s...")
 
                 print(f"[+] Whisper produced {len(raw_results)} segments.")
 
+                if is_job_cancelled(job_id):
+                    return self._json(499, {"status": "cancelled", "error": "Cancelled by user"})
+
+                if job_id:
+                    set_job_progress(job_id, 85, f"Speaker diarization ({len(raw_results)} segments)...")
+
                 try:
-                    samples, sr = load_wav(tmp_path)
+                    samples, sr = load_wav(wav_path)
                 except (wave.Error, ValueError) as wav_err:
                     return self._json(400, {"status": "error", "error": f"Invalid WAV audio: {wav_err}"})
                 final_segments, speaker_metadata = perform_speaker_diarization(
-                    samples, sr, raw_results, max_speakers, exact_speakers
+                    samples, sr, raw_results, max_speakers, exact_speakers, min_silhouette=min_silhouette
                 )
+
+            if job_id:
+                set_job_progress(job_id, 96, "Saving transcript...")
 
             print(f"[+] Diarization complete: {len(speaker_metadata)} speaker(s) ({diarizer_type}).")
             speakers_summary = "\n".join(
@@ -1030,11 +1465,19 @@ class TranscribeHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
         finally:
+            if prepared_cleanup_path and os.path.exists(prepared_cleanup_path):
+                try:
+                    os.remove(prepared_cleanup_path)
+                except Exception:
+                    pass
             if tmp_path and os.path.exists(tmp_path):
                 try:
                     os.remove(tmp_path)
                 except Exception:
                     pass
+            if job_id:
+                with _JOBS_LOCK:
+                    _ACTIVE_JOBS.pop(job_id, None)
 
 
 def make_server(port):

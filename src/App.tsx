@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { WhisperModelSize, ProcessedFile, LogEntry, SpeakerMetadata, BatchFileItem, LocalEngineConfig } from './types';
 import { OfflineTranscriptionEngine } from './services/transcriptionEngine';
-import { generateMarkdownExport, sanitizeTranscriptBaseName } from './services/exporter';
+import { generateMarkdownExport, parseMarkdownToProcessedFile, sanitizeTranscriptBaseName } from './services/exporter';
 import { Sidebar } from './components/Sidebar';
 import { StatCards } from './components/StatCards';
 import { StatusBox } from './components/StatusBox';
@@ -13,10 +13,14 @@ import { RecorderModal } from './components/RecorderModal';
 import { SpeakerManagerModal } from './components/SpeakerManagerModal';
 import { ExportModal } from './components/ExportModal';
 import { ModelSettingsModal } from './components/ModelSettingsModal';
+import { SavedOutputsModal } from './components/SavedOutputsModal';
 import { Upload, SlidersHorizontal, Eye, AlertTriangle, X, FileText, Layers, Sliders } from 'lucide-react';
+
+const FALLBACK_SPEAKER_COLORS = ['#00ffcc', '#ff0077', '#ffcc00', '#0099ff', '#a855f7', '#22c55e', '#f97316'];
 
 export const App: React.FC = () => {
   const [model, setModel] = useState<WhisperModelSize>('medium');
+  const [language, setLanguage] = useState<string>('auto');
   const [status, setStatus] = useState<string>('System Ready');
   const [progress, setProgress] = useState<number>(0);
   const [showProgress, setShowProgress] = useState<boolean>(false);
@@ -25,17 +29,27 @@ export const App: React.FC = () => {
   const [isDragOver, setIsDragOver] = useState<boolean>(false);
   const [queueItems, setQueueItems] = useState<BatchFileItem[]>([]);
 
-  // Engine configuration with strict offline enforcement and skipExisting enabled by default
+  // Engine configuration with strict offline enforcement, speed & accuracy defaults
   const [engineConfig, setEngineConfig] = useState<LocalEngineConfig>({
     localModelPath: '/models/',
     backend: 'local-faster-whisper',
     localServerUrl: 'http://127.0.0.1:8000',
     blockRemoteDownloads: true,
     device: 'auto',
+    computeType: 'auto',
     beamSize: 5,
+    minSilenceMs: 250,
+    vadThreshold: 0.35,
     maxSpeakers: 3,
     exactSpeakers: false,
+    minSilhouette: 0.08,
     skipExisting: true,
+    useBatched: true,
+    normalizeAudio: true,
+    wordTimestamps: true,
+    initialPrompt: '',
+    hotwords: '',
+    autoSavePreset: 'standard',
   });
 
   const [logs, setLogs] = useState<LogEntry[]>([
@@ -65,19 +79,25 @@ export const App: React.FC = () => {
   const [isSpeakersOpen, setIsSpeakersOpen] = useState(false);
   const [isExportOpen, setIsExportOpen] = useState(false);
   const [isModelSettingsOpen, setIsModelSettingsOpen] = useState(false);
+  const [isSavedOutputsOpen, setIsSavedOutputsOpen] = useState(false);
 
-  // Refs for queue processing & audio URL lifecycle
+  // Refs for queue processing, cancellation & audio URL lifecycle
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const engineRef = useRef<OfflineTranscriptionEngine>(new OfflineTranscriptionEngine());
   const audioUrlsRef = useRef<Map<string, string>>(new Map());
   const pendingQueueRef = useRef<BatchFileItem[]>([]);
   const isProcessingRef = useRef<boolean>(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const activeCancelFnRef = useRef<(() => void) | null>(null);
+  const cancelRequestedRef = useRef<boolean>(false);
   const engineConfigRef = useRef<LocalEngineConfig>(engineConfig);
   const modelRef = useRef<WhisperModelSize>(model);
+  const languageRef = useRef<string>(language);
   const processedFilesRef = useRef<ProcessedFile[]>(processedFiles);
 
   engineConfigRef.current = engineConfig;
   modelRef.current = model;
+  languageRef.current = language;
   processedFilesRef.current = processedFiles;
 
   useEffect(() => {
@@ -128,7 +148,9 @@ export const App: React.FC = () => {
       addLog('INFO', '[AUTO-SAVE] Skipped: auto-save needs the local Python server. Use Export to download the file.');
       return;
     }
-    const mdContent = generateMarkdownExport(fileData, fileData.speakers, { preset: 'standard' });
+    const mdContent = generateMarkdownExport(fileData, fileData.speakers, {
+      preset: cfg.autoSavePreset || 'standard',
+    });
     const bName = sanitizeTranscriptBaseName(originalName);
     const cleanName = `transcript_${bName}.md`;
     try {
@@ -175,23 +197,30 @@ export const App: React.FC = () => {
   const runQueueLoop = async () => {
     if (isProcessingRef.current) return;
     isProcessingRef.current = true;
+    cancelRequestedRef.current = false;
     setIsProcessing(true);
     setShowProgress(true);
     setErrorBanner(null);
 
     let hasErrors = false;
+    let wasCancelled = false;
     let processedInRun = 0;
     let skippedInRun = 0;
 
     try {
       while (pendingQueueRef.current.length > 0) {
+        if (cancelRequestedRef.current) {
+          wasCancelled = true;
+          break;
+        }
         const batchItem = pendingQueueRef.current.shift()!;
         const file = batchItem.file;
         const cfg = engineConfigRef.current;
         const currentModel = modelRef.current;
+        const currentLanguage = languageRef.current;
         const remainingCount = pendingQueueRef.current.length;
 
-        // 1. Check outputs/ and transcripts/ before decoding audio
+        // 1. Check outputs/ and transcripts/ before processing audio
         if (!batchItem.force && (cfg.skipExisting ?? true)) {
           setStatus(`Checking outputs for ${file.name}...`);
           setQueueItems((prev) =>
@@ -224,15 +253,19 @@ export const App: React.FC = () => {
         }
 
         // 2. Transcribe file
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        activeCancelFnRef.current = null;
+
         setProgress(5);
         setShowProgress(true);
         setStatus(`Processing: ${file.name}${remainingCount > 0 ? ` (${remainingCount} more queued)` : ''}...`);
-        addLog('PROC', `Started processing: ${file.name}...`);
+        addLog('PROC', `Started processing: ${file.name} (lang=${currentLanguage})...`);
 
         setQueueItems((prev) =>
           prev.map((item) =>
             item.id === batchItem.id
-              ? { ...item, status: 'processing', progress: 5, stageMessage: 'Preparing 16kHz audio track...' }
+              ? { ...item, status: 'processing', progress: 5, stageMessage: 'Uploading & preparing audio...' }
               : item
           )
         );
@@ -242,9 +275,13 @@ export const App: React.FC = () => {
             file,
             {
               modelSize: currentModel,
-              language: 'auto',
+              language: currentLanguage,
               engineConfig: cfg,
               force: batchItem.force,
+              signal: controller.signal,
+              onJobStart: (cancelFn) => {
+                activeCancelFnRef.current = cancelFn;
+              },
             },
             (prog, stage) => {
               setProgress(prog);
@@ -256,9 +293,6 @@ export const App: React.FC = () => {
                     : item
                 )
               );
-              if (prog === 35 || prog === 60 || prog === 75 || prog === 88) {
-                addLog('PROC', `[${file.name}] ${stage}`);
-              }
             }
           );
 
@@ -307,6 +341,26 @@ export const App: React.FC = () => {
           await saveTranscriptMarkdownToServer(result, file.name, cfg);
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
+          if (msg === 'CANCELLED') {
+            wasCancelled = true;
+            const remainingIds = new Set(pendingQueueRef.current.map((q) => q.id));
+            pendingQueueRef.current = [];
+            setQueueItems((prev) =>
+              prev.map((item) =>
+                item.id === batchItem.id || remainingIds.has(item.id)
+                  ? {
+                      ...item,
+                      status: 'cancelled',
+                      progress: 0,
+                      stageMessage: 'Cancelled by user',
+                    }
+                  : item
+              )
+            );
+            addLog('INFO', `[CANCELLED] Stopped transcription for "${file.name}".`);
+            break;
+          }
+
           if (msg.startsWith('SKIPPED:')) {
             const existingPath = msg.slice('SKIPPED:'.length) || 'outputs/';
             skippedInRun += 1;
@@ -344,14 +398,22 @@ export const App: React.FC = () => {
                 : item
             )
           );
+        } finally {
+          abortControllerRef.current = null;
+          activeCancelFnRef.current = null;
         }
       }
     } finally {
       isProcessingRef.current = false;
+      cancelRequestedRef.current = false;
+      abortControllerRef.current = null;
+      activeCancelFnRef.current = null;
       setIsProcessing(false);
       setShowProgress(false);
       setProgress(0);
-      if (hasErrors) {
+      if (wasCancelled) {
+        setStatus('Transcription cancelled');
+      } else if (hasErrors) {
         setStatus('Queue finished with errors. See alert above.');
       } else if (skippedInRun > 0 && processedInRun === 0) {
         setStatus(`Skipped ${skippedInRun} already transcribed file(s)`);
@@ -360,6 +422,34 @@ export const App: React.FC = () => {
       } else {
         setStatus('All files in batch queue processed successfully');
       }
+    }
+  };
+
+  const handleCancelProcessing = () => {
+    if (!isProcessingRef.current) return;
+    cancelRequestedRef.current = true;
+    setStatus('Cancelling active job...');
+    activeCancelFnRef.current?.();
+    abortControllerRef.current?.abort();
+  };
+
+  const handleOpenSavedTranscript = async (relativePath: string) => {
+    const cfg = engineConfigRef.current;
+    try {
+      const payload = await engineRef.current.loadSavedTranscript(relativePath, cfg.localServerUrl);
+      const parsed = parseMarkdownToProcessedFile(payload.filename, payload.relativePath, payload.content);
+      setProcessedFiles((prev) => {
+        const others = prev.filter((p) => p.filename !== parsed.filename);
+        return [...others, parsed];
+      });
+      setActiveFile(parsed);
+      setSpeakers(parsed.speakers);
+      setActiveTab('transcript');
+      addLog('INFO', `Opened saved transcript: ${payload.relativePath}`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setErrorBanner(`Could not open saved transcript "${relativePath}":\n${msg}`);
+      addLog('ERROR', `Failed to open ${relativePath}: ${msg}`);
     }
   };
 
@@ -528,6 +618,43 @@ export const App: React.FC = () => {
     void saveTranscriptMarkdownToServer(updatedFile, activeFile.filename);
   };
 
+  // Reassign a single segment to another (or newly created) speaker
+  const handleChangeSegmentSpeaker = (segId: string, targetSpeakerId: string, newSpeakerName?: string) => {
+    if (!activeFile) return;
+    const updatedSegments = activeFile.segments.map((s) =>
+      s.id === segId ? { ...s, speakerId: targetSpeakerId } : s
+    );
+
+    const updatedSpeakers: Record<string, SpeakerMetadata> = { ...activeFile.speakers };
+    if (!updatedSpeakers[targetSpeakerId]) {
+      const idx = Object.keys(updatedSpeakers).length;
+      updatedSpeakers[targetSpeakerId] = {
+        id: targetSpeakerId,
+        name: newSpeakerName || `Speaker ${String(idx + 1).padStart(3, '0')}`,
+        gender: 'Unknown',
+        sampleCount: 0,
+        color: FALLBACK_SPEAKER_COLORS[idx % FALLBACK_SPEAKER_COLORS.length],
+      };
+    }
+
+    const counts: Record<string, number> = {};
+    updatedSegments.forEach((s) => {
+      counts[s.speakerId] = (counts[s.speakerId] || 0) + 1;
+    });
+    Object.keys(updatedSpeakers).forEach((id) => {
+      updatedSpeakers[id] = { ...updatedSpeakers[id], sampleCount: counts[id] || 0 };
+    });
+
+    const updatedFile: ProcessedFile = {
+      ...activeFile,
+      segments: updatedSegments,
+      speakers: updatedSpeakers,
+    };
+    syncUpdatedFile(updatedFile);
+    addLog('INFO', `Reassigned segment ${segId} to ${updatedSpeakers[targetSpeakerId].name}.`);
+    void saveTranscriptMarkdownToServer(updatedFile, activeFile.filename);
+  };
+
   return (
     <div
       className="flex h-screen bg-[#0b0b0b] text-[#e0e0e0] overflow-hidden select-none relative"
@@ -578,10 +705,13 @@ export const App: React.FC = () => {
       <Sidebar
         model={model}
         onModelChange={handleModelChange}
+        language={language}
+        onLanguageChange={setLanguage}
         onImportClick={() => fileInputRef.current?.click()}
         onConvertClick={() => setIsConverterOpen(true)}
         onRecordClick={() => setIsRecorderOpen(true)}
         onOpenModelSettings={() => setIsModelSettingsOpen(true)}
+        onOpenSavedOutputs={() => setIsSavedOutputsOpen(true)}
         onOpenSpeakers={() => setIsSpeakersOpen(true)}
         onOpenExport={() => setIsExportOpen(true)}
         hasActiveTranscript={Boolean(activeFile)}
@@ -605,7 +735,9 @@ export const App: React.FC = () => {
           progress={progress}
           showProgress={showProgress && !errorBanner}
           isError={!!errorBanner}
+          isProcessing={isProcessing}
           onDismissError={() => setErrorBanner(null)}
+          onCancel={handleCancelProcessing}
         />
 
         {/* Global Error Alert Banner */}
@@ -747,6 +879,9 @@ export const App: React.FC = () => {
               onClearQueue={handleClearQueue}
               onRemoveItem={handleRemoveQueueItem}
               onForceTranscribeItem={handleForceTranscribeItem}
+              onCancelProcessing={handleCancelProcessing}
+              onOpenExistingTranscript={(relPath) => void handleOpenSavedTranscript(relPath)}
+              onOpenSavedOutputs={() => setIsSavedOutputsOpen(true)}
             />
           </div>
         )}
@@ -793,6 +928,7 @@ export const App: React.FC = () => {
               onOpenSpeakers={() => setIsSpeakersOpen(true)}
               onOpenExport={() => setIsExportOpen(true)}
               onUpdateSegmentText={handleUpdateSegmentText}
+              onChangeSegmentSpeaker={handleChangeSegmentSpeaker}
             />
           </div>
         )}
@@ -805,6 +941,13 @@ export const App: React.FC = () => {
         config={engineConfig}
         onSaveConfig={(cfg) => setEngineConfig(cfg)}
         onAddLog={addLog}
+      />
+
+      <SavedOutputsModal
+        isOpen={isSavedOutputsOpen}
+        onClose={() => setIsSavedOutputsOpen(false)}
+        onFetchList={() => engineRef.current.listSavedTranscripts(engineConfig.localServerUrl)}
+        onOpenTranscript={handleOpenSavedTranscript}
       />
 
       <ConverterModal

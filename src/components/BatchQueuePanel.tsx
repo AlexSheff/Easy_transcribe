@@ -13,7 +13,10 @@ import {
   Music,
   Video,
   SkipForward,
-  RotateCcw
+  RotateCcw,
+  Square,
+  Archive,
+  ExternalLink
 } from 'lucide-react';
 
 interface BatchQueuePanelProps {
@@ -28,6 +31,9 @@ interface BatchQueuePanelProps {
   onClearQueue: () => void;
   onRemoveItem: (id: string) => void;
   onForceTranscribeItem: (id: string) => void;
+  onCancelProcessing?: () => void;
+  onOpenExistingTranscript?: (relativePath: string) => void;
+  onOpenSavedOutputs?: () => void;
 }
 
 export const BatchQueuePanel: React.FC<BatchQueuePanelProps> = ({
@@ -42,6 +48,9 @@ export const BatchQueuePanel: React.FC<BatchQueuePanelProps> = ({
   onClearQueue,
   onRemoveItem,
   onForceTranscribeItem,
+  onCancelProcessing,
+  onOpenExistingTranscript,
+  onOpenSavedOutputs,
 }) => {
   const completedCount = queueItems.filter((i) => i.status === 'completed').length;
   const skippedCount = queueItems.filter((i) => i.status === 'skipped').length;
@@ -97,7 +106,7 @@ export const BatchQueuePanel: React.FC<BatchQueuePanelProps> = ({
               {skippedCount > 0 ? ` · ${skippedCount} skipped` : ''})
             </h3>
             <p className="text-[11px] text-[#777777]">
-              Automated audio conversion, speaker diarization, and Markdown generation
+              Automated server-side decoding, speaker diarization, and Markdown generation
             </p>
           </div>
         </div>
@@ -117,6 +126,17 @@ export const BatchQueuePanel: React.FC<BatchQueuePanelProps> = ({
             <span>Skip if in outputs</span>
           </label>
 
+          {onOpenSavedOutputs && (
+            <button
+              onClick={onOpenSavedOutputs}
+              className="bg-[#1b1b1b] hover:bg-[#242424] border border-[#2d2d2d] hover:border-[#00ffcc]/40 text-[#cccccc] hover:text-white text-xs font-mono px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition cursor-pointer"
+              title="Browse transcripts saved in outputs/ and transcripts/"
+            >
+              <Archive className="w-3.5 h-3.5 text-[#00ffcc]" />
+              <span>Saved .MD</span>
+            </button>
+          )}
+
           <button
             onClick={onAddFilesClick}
             className="bg-[#1e1e1e] hover:bg-[#282828] border border-[#333333] hover:border-[#00ffcc]/60 text-[#00ffcc] text-xs font-mono px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition cursor-pointer"
@@ -124,6 +144,17 @@ export const BatchQueuePanel: React.FC<BatchQueuePanelProps> = ({
             <Plus className="w-3.5 h-3.5" />
             <span>Add Files</span>
           </button>
+
+          {isProcessing && onCancelProcessing && (
+            <button
+              onClick={onCancelProcessing}
+              className="bg-[#ff0055]/15 hover:bg-[#ff0055]/30 border border-[#ff0055]/40 text-[#ff7788] hover:text-white text-xs font-mono px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition cursor-pointer"
+              title="Cancel current job and clear remaining queue"
+            >
+              <Square className="w-3 h-3 fill-current" />
+              <span>Cancel</span>
+            </button>
+          )}
 
           {processedFiles.length > 0 && (
             <>
@@ -182,6 +213,7 @@ export const BatchQueuePanel: React.FC<BatchQueuePanelProps> = ({
             const isCurrent = item.status === 'processing' || item.status === 'checking';
             const isFinished = item.status === 'completed';
             const isSkipped = item.status === 'skipped';
+            const isCancelled = item.status === 'cancelled';
             const isError = item.status === 'error';
             const isQueued = item.status === 'queued';
             const isSelected = activeFile && item.result && activeFile.id === item.result.id;
@@ -196,6 +228,8 @@ export const BatchQueuePanel: React.FC<BatchQueuePanelProps> = ({
                     ? 'bg-[#151515] border-[#0099ff]/50'
                     : isSkipped
                     ? 'bg-[#141414] border-[#ffcc00]/30'
+                    : isCancelled
+                    ? 'bg-[#141414] border-[#555566]/40'
                     : 'bg-[#141414] border-[#222222] hover:border-[#333333]'
                 }`}
               >
@@ -267,6 +301,16 @@ export const BatchQueuePanel: React.FC<BatchQueuePanelProps> = ({
                           <SkipForward className="w-3 h-3" />
                           <span>Skipped</span>
                         </span>
+                        {item.existingPath && !item.existingPath.startsWith('session') && onOpenExistingTranscript && (
+                          <button
+                            onClick={() => onOpenExistingTranscript(item.existingPath!)}
+                            className="bg-[#00ffcc]/15 hover:bg-[#00ffcc]/25 border border-[#00ffcc]/40 text-[11px] font-mono text-[#00ffcc] px-2 py-0.5 rounded flex items-center space-x-1 transition cursor-pointer"
+                            title="Open saved transcript from disk"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            <span>Open .MD</span>
+                          </button>
+                        )}
                         <button
                           onClick={() => onForceTranscribeItem(item.id)}
                           className="bg-[#1e1e1e] hover:bg-[#282828] border border-[#333] hover:border-[#00ffcc]/50 text-[11px] font-mono text-[#cccccc] hover:text-white px-2 py-0.5 rounded flex items-center space-x-1 transition cursor-pointer"
@@ -274,6 +318,22 @@ export const BatchQueuePanel: React.FC<BatchQueuePanelProps> = ({
                         >
                           <RotateCcw className="w-3 h-3" />
                           <span>Re-run</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {isCancelled && (
+                      <div className="flex items-center space-x-1.5">
+                        <span className="text-[11px] font-mono text-[#9999aa] bg-[#222228] px-2 py-0.5 rounded border border-[#333340]">
+                          Cancelled
+                        </span>
+                        <button
+                          onClick={() => onForceTranscribeItem(item.id)}
+                          className="bg-[#1e1e1e] hover:bg-[#282828] border border-[#333] hover:border-[#00ffcc]/50 text-[11px] font-mono text-[#cccccc] hover:text-white px-2 py-0.5 rounded flex items-center space-x-1 transition cursor-pointer"
+                          title="Retry transcription"
+                        >
+                          <RotateCcw className="w-3 h-3" />
+                          <span>Retry</span>
                         </button>
                       </div>
                     )}

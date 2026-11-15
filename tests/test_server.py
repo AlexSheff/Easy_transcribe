@@ -296,3 +296,81 @@ def test_check_transcripts_and_skip_existing_in_outputs(server):
     assert payload["existing_path"] == "outputs/meeting_01.md"
     assert len(FakeModel.calls) == 0
 
+
+def make_stereo_8k_wav(seconds=2, sr=8000):
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        frames = bytearray()
+        for i in range(int(seconds * sr)):
+            val = int(4000 * math.sin(2 * math.pi * 180 * i / sr))
+            frames += struct.pack("<hh", val, -val)
+        wf.writeframes(bytes(frames))
+    return buf.getvalue()
+
+
+def test_wav_resampling_normalization_and_inference_params(server):
+    port, _ = server
+    resp, data = request(
+        port,
+        "POST",
+        "/transcribe?normalize_audio=1&vad_threshold=0.25&min_silhouette=0.12"
+        "&initial_prompt=Kubernetes&hotwords=Docker&word_timestamps=0&filename=quiet_stereo.wav",
+        body=make_stereo_8k_wav(),
+        headers={"Origin": ORIGIN, "Content-Type": "audio/wav"},
+    )
+    assert resp.status == 200, data
+    call = FakeModel.calls[0]
+    assert call["vad_parameters"]["threshold"] == pytest.approx(0.25)
+    assert call["initial_prompt"] == "Kubernetes"
+    assert call["hotwords"] == "Docker"
+    assert call["word_timestamps"] is False
+    assert "hallucination_silence_threshold" not in call
+
+
+def test_list_and_read_saved_transcripts_and_block_traversal(server):
+    port, tmp_path = server
+    outputs_dir = tmp_path / "outputs"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    (outputs_dir / "note.md").write_text("# Transcript: demo.wav\n\n**[00:00:00] Speaker 001:** hi\n", encoding="utf-8")
+
+    resp, data = request(port, "GET", "/api/transcripts", headers={"Origin": ORIGIN})
+    assert resp.status == 200
+    items = json.loads(data)["items"]
+    assert any(it["relativePath"] == "outputs/note.md" for it in items)
+
+    resp, data = request(port, "GET", "/api/transcript?path=outputs/note.md", headers={"Origin": ORIGIN})
+    assert resp.status == 200
+    assert "Speaker 001" in json.loads(data)["content"]
+
+    resp, _ = request(port, "GET", "/api/transcript?path=../server_faster_whisper.py", headers={"Origin": ORIGIN})
+    assert resp.status == 400
+
+
+def test_progress_and_cancel_endpoints(server, monkeypatch):
+    port, _ = server
+
+    resp, data = request(port, "GET", "/api/progress?job_id=missing_job", headers={"Origin": ORIGIN})
+    assert resp.status == 200
+    assert json.loads(data)["active"] is False
+
+    class CancellingModel(FakeModel):
+        def transcribe(self, path, **kwargs):
+            def gen():
+                yield types.SimpleNamespace(start=0.0, end=1.0, text="first", avg_logprob=-0.2, words=[])
+                srv.cancel_job("job_cancel_1")
+                yield types.SimpleNamespace(start=1.0, end=2.0, text="second", avg_logprob=-0.2, words=[])
+            info = types.SimpleNamespace(language="en", language_probability=1.0, duration=2.0)
+            return gen(), info
+
+    monkeypatch.setattr(srv, "get_whisper_model", lambda *a, **k: CancellingModel())
+    resp, data = request(
+        port, "POST", "/transcribe?job_id=job_cancel_1",
+        body=make_wav(), headers={"Origin": ORIGIN, "Content-Type": "audio/wav"},
+    )
+    assert resp.status == 499
+    assert json.loads(data)["status"] == "cancelled"
+
+

@@ -22,6 +22,7 @@ interface TranscriptViewProps {
   onOpenSpeakers: () => void;
   onOpenExport: () => void;
   onUpdateSegmentText: (segmentId: string, newText: string) => void;
+  onChangeSegmentSpeaker?: (segmentId: string, speakerId: string, newSpeakerName?: string) => void;
 }
 
 export const TranscriptView: React.FC<TranscriptViewProps> = ({
@@ -30,6 +31,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
   onOpenSpeakers,
   onOpenExport,
   onUpdateSegmentText,
+  onChangeSegmentSpeaker,
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -37,6 +39,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [editingSegId, setEditingSegId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
+  const [editingSpeakerSegId, setEditingSpeakerSegId] = useState<string | null>(null);
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -45,6 +48,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
     setCurrentTime(0);
     setEditingSegId(null);
     setEditText('');
+    setEditingSpeakerSegId(null);
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
@@ -128,6 +132,8 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
     downloadTextFile(mdContent, `transcript_${baseName}.md`, 'text/markdown;charset=utf-8');
   };
 
+  const speakerList = Object.values(speakers);
+
   return (
     <div className="bg-[#141414] border border-[#222222] rounded-xl flex flex-col h-[520px] overflow-hidden">
       {/* Hidden audio element */}
@@ -164,7 +170,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
             className="bg-[#1c1c1c] hover:bg-[#282828] border border-[#333333] text-xs font-medium text-[#cccccc] hover:text-white px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition cursor-pointer"
           >
             <Sliders className="w-3.5 h-3.5 text-[#00ffcc]" />
-            <span>Speakers ({Object.keys(speakers).length})</span>
+            <span>Speakers ({speakerList.length})</span>
           </button>
 
           <button
@@ -239,7 +245,7 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
           </div>
         ) : (
           filteredSegments.map((seg) => {
-            const isCurrentlyActive = currentTime >= seg.start && currentTime <= seg.end;
+            const isCurrentlyActive = file.audioUrl ? currentTime >= seg.start && currentTime <= seg.end : false;
             const spk = speakers[seg.speakerId];
             const spkName = spk?.name || seg.speakerId;
             const spkColor = spk?.color || '#00ffcc';
@@ -252,29 +258,61 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
                 }`}
               >
                 <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center space-x-2">
+                  <div className="flex items-center space-x-2 flex-wrap gap-y-1">
                     {/* Timestamp clickable badge */}
                     <button
                       onClick={() => jumpToTime(seg.start)}
                       className="inline-flex items-center space-x-1 font-mono text-xs px-2 py-0.5 rounded bg-[#1e1e1e] hover:bg-[#00ffcc] hover:text-black text-[#00ffcc] transition cursor-pointer"
-                      title="Click to play segment"
+                      title={file.audioUrl ? 'Click to play segment' : 'Timestamp'}
                     >
                       <Clock className="w-3 h-3" />
                       <span>{formatTimeSeconds(seg.start)}</span>
                     </button>
 
-                    {/* Speaker badge */}
-                    <div 
-                      className="inline-flex items-center space-x-1 text-xs font-bold px-2 py-0.5 rounded border"
-                      style={{ 
-                        borderColor: `${spkColor}40`, 
-                        backgroundColor: `${spkColor}15`,
-                        color: spkColor 
-                      }}
-                    >
-                      <User className="w-3 h-3" />
-                      <span>{spkName}</span>
-                    </div>
+                    {/* Clickable Speaker badge for quick per-segment reassignment */}
+                    {editingSpeakerSegId === seg.id && onChangeSegmentSpeaker ? (
+                      <select
+                        autoFocus
+                        value={seg.speakerId}
+                        onBlur={() => setEditingSpeakerSegId(null)}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          if (val === '__new__') {
+                            const nextNum = speakerList.length + 1;
+                            const newId = `speaker_${String(nextNum).padStart(3, '0')}`;
+                            onChangeSegmentSpeaker(seg.id, newId, `Speaker ${String(nextNum).padStart(3, '0')}`);
+                          } else {
+                            onChangeSegmentSpeaker(seg.id, val);
+                          }
+                          setEditingSpeakerSegId(null);
+                        }}
+                        className="bg-[#1b1b22] border border-[#00ffcc] rounded px-2 py-0.5 text-xs font-mono text-white focus:outline-none cursor-pointer"
+                      >
+                        {speakerList.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name}
+                          </option>
+                        ))}
+                        <option value="__new__">+ New Speaker {String(speakerList.length + 1).padStart(3, '0')}</option>
+                      </select>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onChangeSegmentSpeaker && setEditingSpeakerSegId(seg.id)}
+                        className={`inline-flex items-center space-x-1 text-xs font-bold px-2 py-0.5 rounded border transition ${
+                          onChangeSegmentSpeaker ? 'cursor-pointer hover:brightness-125' : 'cursor-default'
+                        }`}
+                        style={{ 
+                          borderColor: `${spkColor}40`, 
+                          backgroundColor: `${spkColor}15`,
+                          color: spkColor 
+                        }}
+                        title={onChangeSegmentSpeaker ? 'Click to reassign speaker for this segment' : undefined}
+                      >
+                        <User className="w-3 h-3" />
+                        <span>{spkName}</span>
+                      </button>
+                    )}
 
                     {spk?.pitchF0 && (
                       <span className="text-[10px] font-mono text-[#666666]">
@@ -316,7 +354,30 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({
                 ) : (
                   <p className="text-sm text-[#e0e0e0] leading-relaxed pl-1 select-text">
                     {seg.uncertain && <span className="text-[#ffcc00] font-mono mr-1">[(?)]</span>}
-                    {seg.text}
+                    {seg.words && seg.words.length > 0 ? (
+                      seg.words.map((w, wi) => {
+                        const isActiveWord = file.audioUrl && currentTime >= w.start && currentTime <= w.end;
+                        const isLowConf = w.confidence !== undefined && w.confidence < 0.45;
+                        return (
+                          <span
+                            key={`${seg.id}_w_${wi}`}
+                            onClick={() => file.audioUrl && jumpToTime(w.start)}
+                            title={
+                              w.confidence !== undefined
+                                ? `${formatTimeSeconds(w.start)} · confidence ${Math.round(w.confidence * 100)}%`
+                                : formatTimeSeconds(w.start)
+                            }
+                            className={`${file.audioUrl ? 'cursor-pointer hover:text-[#00ffcc]' : ''} ${
+                              isActiveWord ? 'text-[#00ffcc] bg-[#00ffcc]/15 rounded px-0.5 font-semibold' : ''
+                            } ${isLowConf ? 'border-b border-dotted border-[#ffcc00]/80' : ''}`}
+                          >
+                            {w.word}
+                          </span>
+                        );
+                      })
+                    ) : (
+                      seg.text
+                    )}
                   </p>
                 )}
               </div>

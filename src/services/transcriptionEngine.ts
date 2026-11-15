@@ -1,4 +1,11 @@
-import { ProcessedFile, TranscriptSegment, SpeakerMetadata, WhisperModelSize, LocalEngineConfig } from '../types';
+import {
+  ProcessedFile,
+  TranscriptSegment,
+  SpeakerMetadata,
+  WhisperModelSize,
+  LocalEngineConfig,
+  SavedTranscriptInfo,
+} from '../types';
 import { convertMediaToWav } from './audioConverter';
 import { loadTransformersModule } from './whisperLoader';
 
@@ -29,6 +36,8 @@ export interface PipelineOptions {
   language: string;
   engineConfig?: LocalEngineConfig;
   force?: boolean;
+  signal?: AbortSignal;
+  onJobStart?: (cancelFn: () => void) => void;
 }
 
 export interface ExistingTranscriptMatch {
@@ -100,9 +109,49 @@ export class OfflineTranscriptionEngine {
     }
   }
 
+  public async cancelJob(jobId: string, serverUrl?: string): Promise<void> {
+    const baseUrl = (serverUrl || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+    try {
+      await fetch(`${baseUrl}/api/cancel?job_id=${encodeURIComponent(jobId)}`, {
+        method: 'POST',
+      });
+    } catch {
+      /* server might already be closed or offline */
+    }
+  }
+
+  public async listSavedTranscripts(serverUrl?: string): Promise<SavedTranscriptInfo[]> {
+    const baseUrl = (serverUrl || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+    const resp = await fetch(`${baseUrl}/api/transcripts`);
+    if (!resp.ok) {
+      throw new Error(`Server returned HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    return Array.isArray(data?.items) ? data.items : [];
+  }
+
+  public async loadSavedTranscript(
+    relativePath: string,
+    serverUrl?: string
+  ): Promise<{ filename: string; relativePath: string; content: string }> {
+    const baseUrl = (serverUrl || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+    const resp = await fetch(`${baseUrl}/api/transcript?path=${encodeURIComponent(relativePath)}`);
+    if (!resp.ok) {
+      let msg = `HTTP ${resp.status}`;
+      try {
+        const err = await resp.json();
+        if (err?.error) msg = err.error;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(`Could not load transcript (${msg})`);
+    }
+    return resp.json();
+  }
+
   /**
-   * Main pipeline: decode/normalise audio in the browser, then transcribe with the selected backend.
-   * Failures are thrown, never papered over with placeholder text.
+   * Main pipeline: streams raw media directly to faster-whisper (no slow browser decoding),
+   * or decodes in browser when running the in-browser transformers.js backend.
    */
   public async processMediaFile(
     file: File,
@@ -110,19 +159,34 @@ export class OfflineTranscriptionEngine {
     onProgress: (progress: number, stage: string) => void
   ): Promise<ProcessedFile> {
     this.voiceDb.clear();
-
-    onProgress(5, `Extracting and normalizing audio track (16kHz Mono)...`);
-    const { blob, duration, buffer } = await convertMediaToWav(file, 16000, (p, msg) => {
-      onProgress(Math.floor(p * 0.3), msg);
-    });
+    if (options.signal?.aborted) {
+      throw new Error('CANCELLED');
+    }
 
     const backend = options.engineConfig?.backend || 'local-faster-whisper';
-    onProgress(35, `Starting speech recognition (${backend})...`);
 
-    const segments =
-      backend === 'local-faster-whisper'
-        ? await this.transcribeWithPythonServer(file, blob, duration, options, onProgress)
-        : await this.transcribeInBrowser(buffer, duration, options, onProgress);
+    let segments: TranscriptSegment[];
+    let duration = 0;
+    let audioBlob: Blob = file;
+
+    if (backend === 'local-faster-whisper') {
+      onProgress(10, `Uploading ${file.name} directly to local engine...`);
+      const serverResult = await this.transcribeWithPythonServer(file, options, onProgress);
+      segments = serverResult.segments;
+      duration = serverResult.duration;
+    } else {
+      onProgress(5, `Extracting and normalizing audio track (16kHz Mono)...`);
+      const converted = await convertMediaToWav(file, 16000, (p, msg) => {
+        onProgress(Math.floor(p * 0.3), msg);
+      });
+      if (options.signal?.aborted) {
+        throw new Error('CANCELLED');
+      }
+      audioBlob = converted.blob;
+      duration = converted.duration;
+      onProgress(35, `Starting speech recognition (${backend})...`);
+      segments = await this.transcribeInBrowser(converted.buffer, duration, options, onProgress);
+    }
 
     onProgress(100, `Transcription completed: ${segments.length} segments.`);
 
@@ -131,8 +195,8 @@ export class OfflineTranscriptionEngine {
       filename: file.name,
       fileSize: file.size,
       duration,
-      audioBlob: blob,
-      audioUrl: URL.createObjectURL(blob),
+      audioBlob,
+      audioUrl: URL.createObjectURL(audioBlob),
       segments,
       speakers: this.getSpeakers(),
       processedAt: new Date().toISOString(),
@@ -146,39 +210,83 @@ export class OfflineTranscriptionEngine {
   // ---------------------------------------------------------------------------
   private async transcribeWithPythonServer(
     file: File,
-    blob: Blob,
-    duration: number,
     options: PipelineOptions,
     onProgress: (progress: number, stage: string) => void
-  ): Promise<TranscriptSegment[]> {
+  ): Promise<{ segments: TranscriptSegment[]; duration: number }> {
     const cfg = options.engineConfig;
     const serverUrl = (cfg?.localServerUrl || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+    const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     const query = new URLSearchParams({
       model: options.modelSize,
       min_silence_ms: String(cfg?.minSilenceMs ?? 250),
+      vad_threshold: String(cfg?.vadThreshold ?? 0.35),
       beam_size: String(cfg?.beamSize ?? 5),
       device: cfg?.device ?? 'auto',
+      compute_type: cfg?.computeType ?? 'auto',
       language: options.language || 'auto',
       max_speakers: String(cfg?.maxSpeakers ?? 3),
       exact_speakers: cfg?.exactSpeakers ? '1' : '0',
+      min_silhouette: String(cfg?.minSilhouette ?? 0.08),
       skip_existing: !options.force && (cfg?.skipExisting ?? true) ? '1' : '0',
+      use_batched: (cfg?.useBatched ?? true) ? '1' : '0',
+      normalize_audio: (cfg?.normalizeAudio ?? true) ? '1' : '0',
+      word_timestamps: (cfg?.wordTimestamps ?? true) ? '1' : '0',
       filename: file.name,
+      job_id: jobId,
     });
-    onProgress(35, `Connecting to local faster-whisper server at ${serverUrl}...`);
+    if (cfg?.initialPrompt?.trim()) {
+      query.set('initial_prompt', cfg.initialPrompt.trim());
+    }
+    if (cfg?.hotwords?.trim()) {
+      query.set('hotwords', cfg.hotwords.trim());
+    }
+
+    options.onJobStart?.(() => {
+      void this.cancelJob(jobId, serverUrl);
+    });
+
+    onProgress(12, `Connecting to local faster-whisper server at ${serverUrl}...`);
+
+    let lastPolledPct = 12;
+    const pollTimer = setInterval(async () => {
+      if (options.signal?.aborted) return;
+      try {
+        const pRes = await fetch(`${serverUrl}/api/progress?job_id=${encodeURIComponent(jobId)}`);
+        if (!pRes.ok) return;
+        const pData = await pRes.json();
+        if (pData?.active && typeof pData.progress === 'number' && pData.progress >= lastPolledPct) {
+          lastPolledPct = pData.progress;
+          onProgress(pData.progress, pData.stage || 'Processing...');
+        }
+      } catch {
+        /* ignore transient polling failures */
+      }
+    }, 450);
 
     let resp: Response;
     try {
       resp = await fetch(`${serverUrl}/transcribe?${query.toString()}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'audio/wav' },
-        body: blob,
+        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        body: file,
+        signal: options.signal,
       });
     } catch (networkErr: any) {
+      clearInterval(pollTimer);
+      if (networkErr?.name === 'AbortError' || options.signal?.aborted) {
+        throw new Error('CANCELLED');
+      }
       throw new Error(
         `Local server is unreachable at ${serverUrl} (${networkErr?.message || 'connection refused'}). ` +
         `Start it with "python server_faster_whisper.py" (see README).`
       );
+    } finally {
+      clearInterval(pollTimer);
+    }
+
+    if (resp.status === 499) {
+      throw new Error('CANCELLED');
     }
 
     if (!resp.ok) {
@@ -198,6 +306,9 @@ export class OfflineTranscriptionEngine {
     } catch (jsonErr: any) {
       throw new Error(`Invalid JSON response from local server: ${jsonErr.message}`);
     }
+    if (data.status === 'cancelled') {
+      throw new Error('CANCELLED');
+    }
     if (data.status === 'error' || data.error) {
       throw new Error(`Local server error: ${data.error}`);
     }
@@ -205,10 +316,13 @@ export class OfflineTranscriptionEngine {
       throw new Error(`SKIPPED:${data.existing_path || data.filename || 'outputs/'}`);
     }
     if (!Array.isArray(data.segments) || data.segments.length === 0) {
-      throw new Error('No speech was detected. Check the audio, or lower "VAD Min Silence" in engine settings.');
+      throw new Error('No speech was detected. Check the audio, or lower "VAD Threshold" / "VAD Min Silence" in engine settings.');
     }
 
-    onProgress(65, `Received ${data.segments.length} segments (${data.diarizer_type || 'unknown'} diarizer).`);
+    const lastEnd = data.segments.reduce((m: number, s: any) => Math.max(m, Number(s.end || 0)), 0);
+    const duration = Math.max(Number(data.duration || 0), lastEnd);
+
+    onProgress(98, `Received ${data.segments.length} segments (${data.diarizer_type || 'unknown'} diarizer).`);
 
     if (data.speakers && typeof data.speakers === 'object') {
       Object.entries(data.speakers).forEach(([spkId, m]: [string, any]) => {
@@ -223,9 +337,9 @@ export class OfflineTranscriptionEngine {
       });
     }
 
-    return data.segments.map((s: any, idx: number): TranscriptSegment => {
+    const segments = data.segments.map((s: any, idx: number): TranscriptSegment => {
       const start = Math.max(0, Number(s.start || 0));
-      const end = Math.min(duration, Math.max(start + 0.3, Number(s.end || duration)));
+      const end = Math.min(Math.max(duration, start + 0.3), Math.max(start + 0.3, Number(s.end || start + 0.3)));
       const confidence = typeof s.confidence === 'number' ? s.confidence : undefined;
       return {
         id: `seg_${idx + 1}`,
@@ -241,6 +355,8 @@ export class OfflineTranscriptionEngine {
           : [],
       };
     });
+
+    return { segments, duration };
   }
 
   // ---------------------------------------------------------------------------
