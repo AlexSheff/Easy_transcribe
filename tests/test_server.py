@@ -374,3 +374,125 @@ def test_progress_and_cancel_endpoints(server, monkeypatch):
     assert json.loads(data)["status"] == "cancelled"
 
 
+def test_split_segments_at_pauses():
+    segs = [
+        {
+            "start": 0.0,
+            "end": 3.4,
+            "text": "Привет, как дела? Всё отлично, спасибо!",
+            "confidence": 0.9,
+            "words": [
+                {"word": " Привет,", "start": 0.0, "end": 0.45, "probability": 0.9},
+                {"word": " как", "start": 0.48, "end": 0.70, "probability": 0.92},
+                {"word": " дела?", "start": 0.72, "end": 1.15, "probability": 0.91},
+                {"word": " Всё", "start": 1.55, "end": 1.95, "probability": 0.89},
+                {"word": " отлично,", "start": 2.00, "end": 2.55, "probability": 0.95},
+                {"word": " спасибо!", "start": 2.60, "end": 3.30, "probability": 0.93},
+            ],
+        },
+        # Too short to split
+        {
+            "start": 3.5,
+            "end": 4.2,
+            "text": "Да, точно.",
+            "confidence": 0.88,
+            "words": [
+                {"word": " Да,", "start": 3.5, "end": 3.7, "probability": 0.88},
+                {"word": " точно.", "start": 3.9, "end": 4.2, "probability": 0.88},
+            ],
+        },
+    ]
+    split = srv.split_segments_at_pauses(segs)
+    assert len(split) == 3
+    assert split[0]["text"] == "Привет, как дела?"
+    assert split[0]["end"] == pytest.approx(1.15)
+    assert split[1]["text"] == "Всё отлично, спасибо!"
+    assert split[1]["start"] == pytest.approx(1.55)
+    assert split[2]["text"] == "Да, точно."
+
+
+def test_cluster_two_segments_splits_distinct_voices():
+    import numpy as np
+    rng = np.random.default_rng(7)
+    v1 = rng.normal(size=192)
+    v1 /= np.linalg.norm(v1)
+    v2 = rng.normal(size=192)
+    v2 /= np.linalg.norm(v2)
+    assert srv.cluster_speakers([v1, v2], [2.0, 2.0], max_speakers=3, pitches=[120.0, 220.0]) == [0, 1]
+    assert set(srv.cluster_speakers([v1, v1], [2.0, 2.0], max_speakers=3, pitches=[120.0, 125.0])) == {0}
+
+
+def test_cluster_keeps_short_turn_second_speaker():
+    X, truth = _synthetic_embeddings(2, 6, noise=0.5, seed=11)
+    # First speaker turns are >= 1.0s, second speaker turns are 0.75s (< RELIABLE_EMBED_SEC)
+    durations = [2.2 if t == 0 else 0.75 for t in truth]
+    labels = srv.cluster_speakers(X, durations, max_speakers=3, pitches=[120.0 if t == 0 else 225.0 for t in truth])
+    assert len(set(labels)) == 2
+    assert _purity(labels, truth) > 0.9
+
+
+def test_cluster_recovers_male_vs_female_minority_speaker():
+    import numpy as np
+    rng = np.random.default_rng(19)
+    c1 = rng.normal(size=192)
+    c1 /= np.linalg.norm(c1)
+    c2 = rng.normal(size=192)
+    c2 -= c2.dot(c1) * c1 * 0.5  # moderately correlated (~0.45 sim) to keep silhouette low
+    c2 /= np.linalg.norm(c2)
+
+    X, pitches, durs, truth = [], [], [], []
+    for _ in range(18):
+        v = c1 + rng.normal(scale=0.35, size=192)
+        X.append(v / np.linalg.norm(v))
+        pitches.append(120.0)
+        durs.append(2.0)
+        truth.append(0)
+    for _ in range(2):
+        v = c2 + rng.normal(scale=0.35, size=192)
+        X.append(v / np.linalg.norm(v))
+        pitches.append(230.0)
+        durs.append(0.75)   # ~4% total speaking share (< 5% legacy threshold)
+        truth.append(1)
+
+    labels = srv.cluster_speakers(X, durs, max_speakers=3, min_silhouette=0.15, pitches=pitches)
+    assert len(set(labels)) == 2
+    assert _purity(labels, truth) == 1.0
+
+
+def test_acoustic_features_handles_leading_silence_and_separates_male_female(monkeypatch):
+    import numpy as np
+    monkeypatch.setattr(srv, "diarizer_type", "acoustic-multifeature")
+    sr = 16000
+
+    def synth_voice(f0_hz, seconds=2.0, lead_silence=0.25):
+        n_sil = int(sr * lead_silence)
+        n_voice = int(sr * seconds)
+        t = np.arange(n_voice, dtype=np.float32) / sr
+        sig = (
+            0.55 * np.sin(2 * np.pi * f0_hz * t)
+            + 0.30 * np.sin(2 * np.pi * 2 * f0_hz * t)
+            + 0.15 * np.sin(2 * np.pi * 3 * f0_hz * t)
+        ).astype(np.float32)
+        return np.concatenate([np.zeros(n_sil, dtype=np.float32), sig])
+
+    male1 = synth_voice(118.0)
+    female1 = synth_voice(225.0)
+    male2 = synth_voice(122.0)
+    female2 = synth_voice(218.0)
+
+    audio = np.concatenate([male1, female1, male2, female2])
+    segs = [
+        {"start": 0.0, "end": 2.25, "text": "Male turn one", "words": []},
+        {"start": 2.25, "end": 4.5, "text": "Female turn one", "words": []},
+        {"start": 4.5, "end": 6.75, "text": "Male turn two", "words": []},
+        {"start": 6.75, "end": 9.0, "text": "Female turn two", "words": []},
+    ]
+    out, meta = srv.perform_speaker_diarization(audio, sr, segs, max_speakers=3)
+    assert len(meta) == 2
+    assert out[0]["speakerId"] == out[2]["speakerId"]
+    assert out[1]["speakerId"] == out[3]["speakerId"]
+    assert out[0]["speakerId"] != out[1]["speakerId"]
+    pitches = sorted(m["pitchF0"] for m in meta.values())
+    assert 105 <= pitches[0] <= 135
+    assert 205 <= pitches[1] <= 240
+

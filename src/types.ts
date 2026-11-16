@@ -44,6 +44,7 @@ export interface ProcessedFile {
   processedAt: string;
   language: string;
   modelUsed: WhisperModelSize;
+  diarizerType?: string;
 }
 
 export interface LogEntry {

@@ -336,7 +336,20 @@ export const App: React.FC = () => {
 
           const outName = `transcript_${sanitizeTranscriptBaseName(file.name)}.md`;
           addLog('DONE', `Completed: ${file.name} -> ${outName}`);
-          addLog('DONE', `Diarization: identified ${Object.keys(result.speakers).length} distinct speaker(s).`);
+          const speakerSummary = Object.values(result.speakers)
+            .map((sp) => (sp.pitchF0 ? `${sp.name} (~${Math.round(sp.pitchF0)} Hz)` : sp.name))
+            .join(', ');
+          const diarizerNote = result.diarizerType ? ` via ${result.diarizerType}` : '';
+          addLog(
+            'DONE',
+            `Diarization${diarizerNote}: identified ${Object.keys(result.speakers).length} distinct speaker(s)${speakerSummary ? ` [${speakerSummary}]` : ''}.`
+          );
+          if (result.diarizerType === 'acoustic-multifeature') {
+            addLog(
+              'INFO',
+              'Fallback acoustic diarizer active (SpeechBrain ECAPA not loaded). Using pitch + log-spectrum clustering.'
+            );
+          }
 
           await saveTranscriptMarkdownToServer(result, file.name, cfg);
         } catch (err: unknown) {

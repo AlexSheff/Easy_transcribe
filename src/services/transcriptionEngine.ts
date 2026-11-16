@@ -168,12 +168,14 @@ export class OfflineTranscriptionEngine {
     let segments: TranscriptSegment[];
     let duration = 0;
     let audioBlob: Blob = file;
+    let diarizerType: string | undefined;
 
     if (backend === 'local-faster-whisper') {
       onProgress(10, `Uploading ${file.name} directly to local engine...`);
       const serverResult = await this.transcribeWithPythonServer(file, options, onProgress);
       segments = serverResult.segments;
       duration = serverResult.duration;
+      diarizerType = serverResult.diarizerType;
     } else {
       onProgress(5, `Extracting and normalizing audio track (16kHz Mono)...`);
       const converted = await convertMediaToWav(file, 16000, (p, msg) => {
@@ -202,6 +204,7 @@ export class OfflineTranscriptionEngine {
       processedAt: new Date().toISOString(),
       language: options.language || 'auto',
       modelUsed: options.modelSize,
+      diarizerType,
     };
   }
 
@@ -212,7 +215,7 @@ export class OfflineTranscriptionEngine {
     file: File,
     options: PipelineOptions,
     onProgress: (progress: number, stage: string) => void
-  ): Promise<{ segments: TranscriptSegment[]; duration: number }> {
+  ): Promise<{ segments: TranscriptSegment[]; duration: number; diarizerType?: string }> {
     const cfg = options.engineConfig;
     const serverUrl = (cfg?.localServerUrl || 'http://127.0.0.1:8000').replace(/\/+$/, '');
     const jobId = `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -356,7 +359,11 @@ export class OfflineTranscriptionEngine {
       };
     });
 
-    return { segments, duration };
+    return {
+      segments,
+      duration,
+      diarizerType: typeof data.diarizer_type === 'string' ? data.diarizer_type : undefined,
+    };
   }
 
   // ---------------------------------------------------------------------------

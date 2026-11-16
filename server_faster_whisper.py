@@ -471,44 +471,106 @@ def slice_samples(samples, sr, start_sec, end_sec):
     return samples[start:max(start + 1, end)]
 
 
-def compute_acoustic_features(samples, framerate):
-    """24-dim acoustic descriptor (spectral shape + F0). Returns (features, f0)."""
+def trim_silence(samples, sr, min_keep_sec=0.35):
+    """Trims leading/trailing low-energy silence frames while preserving min_keep_sec."""
     import numpy as np
 
-    if len(samples) < int(framerate * 0.15):
+    if samples is None or len(samples) == 0:
+        return samples
+    frame_len = max(1, int(sr * 0.02))
+    if len(samples) < frame_len * 4:
+        return samples
+    n_frames = len(samples) // frame_len
+    trimmed_len = n_frames * frame_len
+    frames = samples[:trimmed_len].reshape(n_frames, frame_len)
+    rms = np.sqrt(np.mean(frames.astype(np.float32) ** 2, axis=1) + 1e-12)
+    peak_rms = float(np.max(rms))
+    if peak_rms < 1e-5:
+        return samples
+    active = np.where(rms >= max(1e-4, peak_rms * 0.12))[0]
+    if len(active) == 0:
+        return samples
+    start = max(0, (int(active[0]) - 1) * frame_len)
+    end = min(len(samples), (int(active[-1]) + 2) * frame_len)
+    if (end - start) < int(sr * min_keep_sec):
+        return samples
+    return samples[start:end]
+
+
+def compute_acoustic_features(samples, framerate):
+    """24-dim acoustic descriptor across voiced frames (log-spectral shape + median F0). Returns (features, f0)."""
+    import numpy as np
+
+    samples = trim_silence(samples, framerate, min_keep_sec=0.18)
+    if samples is None or len(samples) < int(framerate * 0.15):
         return np.zeros(24, dtype=np.float32), 0.0
 
-    max_val = np.max(np.abs(samples))
-    norm_samples = samples / max_val if max_val > 1e-5 else samples
+    max_val = float(np.max(np.abs(samples)))
+    norm_samples = (samples / max_val).astype(np.float32, copy=False) if max_val > 1e-5 else samples.astype(np.float32, copy=False)
+    seg_rms = float(np.sqrt(np.mean(norm_samples ** 2) + 1e-12))
+    if seg_rms < 1e-5:
+        return np.zeros(24, dtype=np.float32), 0.0
 
-    # F0 via autocorrelation
-    min_period = int(framerate / 350)
+    # Multi-frame F0 estimation via normalized autocorrelation across active speech frames
+    min_period = max(2, int(framerate / 350))
     max_period = int(framerate / 65)
-    f0 = 0.0
-    if len(norm_samples) >= max_period * 2:
-        window_samples = norm_samples[:max_period * 3]
-        corr = np.correlate(window_samples, window_samples, mode="full")
-        corr = corr[len(corr) // 2:]
-        if max_period < len(corr):
-            sub_corr = corr[min_period:max_period]
-            if len(sub_corr) > 0 and np.max(sub_corr) > 0.05:
-                peak_idx = np.argmax(sub_corr) + min_period
-                f0 = float(framerate / peak_idx)
+    f0_candidates = []
+    win_f0 = min(len(norm_samples), max(max_period * 2 + 8, int(framerate * 0.045)))
+    if win_f0 > max_period + 8:
+        n_f0_frames = min(24, max(1, (len(norm_samples) - win_f0) // max(1, win_f0 // 2) + 1))
+        starts = np.linspace(0, max(0, len(norm_samples) - win_f0), num=n_f0_frames, dtype=int)
+        lags = np.arange(min_period, min(max_period, win_f0 - 8))
+        if len(lags) > 2:
+            for st in starts:
+                w = norm_samples[st:st + win_f0]
+                if float(np.sqrt(np.mean(w ** 2) + 1e-12)) < max(1e-4, 0.25 * seg_rms):
+                    continue
+                w = w - float(np.mean(w))
+                csq = np.cumsum(w.astype(np.float64) ** 2)
+                e1 = csq[(len(w) - 1) - lags]
+                e2 = csq[-1] - csq[lags - 1]
+                denom = np.sqrt(np.maximum(e1 * e2, 0.0)) + 1e-9
+                corr = np.correlate(w, w, mode="full")[len(w) - 1:]
+                norm_corr = corr[lags] / denom
+                peak = float(np.max(norm_corr))
+                if peak >= 0.45:
+                    thresh = max(0.45, 0.90 * peak)
+                    # Pick the earliest local peak above threshold to avoid octave-halving (2*T)
+                    chosen_lag = int(lags[int(np.argmax(norm_corr))])
+                    for k in range(1, len(norm_corr) - 1):
+                        if norm_corr[k] >= thresh and norm_corr[k] >= norm_corr[k - 1] and norm_corr[k] >= norm_corr[k + 1]:
+                            chosen_lag = int(lags[k])
+                            break
+                    f0_candidates.append(float(framerate / chosen_lag))
 
+    f0 = float(np.median(f0_candidates)) if f0_candidates else 0.0
+
+    # Multi-frame averaged FFT across active frames
     n_fft = min(2048, len(norm_samples))
     window = np.hanning(n_fft)
-    spec = np.abs(np.fft.rfft(norm_samples[:n_fft] * window))
+    n_spec_frames = min(24, max(1, (len(norm_samples) - n_fft) // max(1, n_fft // 2) + 1))
+    spec_starts = np.linspace(0, max(0, len(norm_samples) - n_fft), num=n_spec_frames, dtype=int)
+    specs = []
+    for st in spec_starts:
+        fr = norm_samples[st:st + n_fft]
+        if float(np.sqrt(np.mean(fr ** 2) + 1e-12)) >= max(1e-4, 0.20 * seg_rms):
+            specs.append(np.abs(np.fft.rfft(fr * window)))
+    if not specs:
+        mid = max(0, (len(norm_samples) - n_fft) // 2)
+        specs.append(np.abs(np.fft.rfft(norm_samples[mid:mid + n_fft] * window)))
+    spec = np.mean(specs, axis=0)
     freqs = np.fft.rfftfreq(n_fft, 1.0 / framerate)
 
-    total_power = np.sum(spec) + 1e-8
-    centroid = np.sum(freqs * spec) / total_power
-    spread = np.sqrt(np.sum(((freqs - centroid) ** 2) * spec) / total_power)
+    total_power = float(np.sum(spec)) + 1e-8
+    centroid = float(np.sum(freqs * spec) / total_power)
+    spread = float(np.sqrt(np.sum(((freqs - centroid) ** 2) * spec) / total_power))
 
-    band_edges = np.linspace(50, 7500, 17)
+    # Log-spaced bands resolve 60-1000 Hz harmonics/formants far better than linear bins
+    band_edges = np.geomspace(60.0, min(7500.0, framerate * 0.48), 17)
     band_energies = []
     for b in range(16):
         mask = (freqs >= band_edges[b]) & (freqs < band_edges[b + 1])
-        band_energies.append(np.sum(spec[mask]) / total_power)
+        band_energies.append(float(np.sum(spec[mask]) / total_power))
 
     features = np.zeros(24, dtype=np.float32)
     features[0] = f0 / 250.0
@@ -519,7 +581,7 @@ def compute_acoustic_features(samples, framerate):
     features[20] = float(np.std(norm_samples))
     features[21] = float(np.max(norm_samples) - np.min(norm_samples))
     features[22] = float(np.sum(np.abs(np.diff(np.sign(norm_samples)))) / len(norm_samples))
-    features[23] = f0 / 120.0
+    features[23] = (math.log2(f0 / 65.0) / 2.5) if f0 > 60.0 else 0.0
     return features, f0
 
 
@@ -530,12 +592,17 @@ def embed_segment(samples, sr):
     if samples is None or len(samples) < int(sr * MIN_EMBED_SEC):
         return None, 0.0
 
-    features, f0 = compute_acoustic_features(samples, sr)
+    trimmed = trim_silence(samples, sr, min_keep_sec=0.35)
+    features, f0 = compute_acoustic_features(trimmed, sr)
 
     if diarizer_type == "speechbrain-ecapa" and diarizer_model is not None:
         try:
             import torch
-            tensor_audio = torch.from_numpy(samples).unsqueeze(0)
+            arr = trimmed.astype(np.float32, copy=False)
+            tensor_audio = torch.from_numpy(arr).unsqueeze(0)
+            dev = getattr(diarizer_model, "device", None)
+            if dev is not None:
+                tensor_audio = tensor_audio.to(dev)
             with torch.no_grad():
                 emb = diarizer_model.encode_batch(tensor_audio).squeeze().cpu().numpy()
             norm = np.linalg.norm(emb)
@@ -573,15 +640,16 @@ def embed_segments_ecapa_batch(chunks, sr, batch_size=16):
     for idx, chunk in enumerate(chunks):
         if chunk is None or len(chunk) < int(sr * MIN_EMBED_SEC):
             continue
-        _, f0 = compute_acoustic_features(chunk, sr)
+        trimmed = trim_silence(chunk, sr, min_keep_sec=0.35)
+        _, f0 = compute_acoustic_features(trimmed, sr)
         pitches[idx] = f0
-        if len(chunk) > long_thresh:
-            for start in range(0, len(chunk) - int(sr * 1.0), hop_len):
-                sub = chunk[start:min(len(chunk), start + win_len)]
-                if len(sub) >= int(sr * MIN_EMBED_SEC):
+        if len(trimmed) > long_thresh:
+            for start in range(0, len(trimmed) - int(sr * 1.0), hop_len):
+                sub = trimmed[start:min(len(trimmed), start + win_len)]
+                if len(sub) >= int(sr * 0.4):
                     work_items.append((idx, sub))
         else:
-            work_items.append((idx, chunk))
+            work_items.append((idx, trimmed))
 
     if not work_items:
         return results, pitches
@@ -590,6 +658,7 @@ def embed_segments_ecapa_batch(chunks, sr, batch_size=16):
     work_items.sort(key=lambda item: len(item[1]))
     accum = {}
     counts = {}
+    dev = getattr(diarizer_model, "device", None)
 
     for b_start in range(0, len(work_items), batch_size):
         batch = work_items[b_start:b_start + batch_size]
@@ -600,6 +669,10 @@ def embed_segments_ecapa_batch(chunks, sr, batch_size=16):
             t = torch.from_numpy(arr.astype(np.float32, copy=False))
             batch_tensor[j, :len(arr)] = t
             wav_lens[j] = float(len(arr)) / float(max_len)
+
+        if dev is not None:
+            batch_tensor = batch_tensor.to(dev)
+            wav_lens = wav_lens.to(dev)
 
         with torch.no_grad():
             try:
@@ -639,15 +712,79 @@ def _cosine_sims(matrix, centroids):
     return m @ c.T
 
 
-def cluster_speakers(embeddings, durations, max_speakers, exact=False, min_silhouette=None):
+def split_segments_at_pauses(raw_segments, min_gap_sec=0.25, punct_gap_sec=0.12, min_piece_sec=0.65):
+    """
+    Splits multi-sentence or turn-switched Whisper segments using word timestamps so
+    two speakers appearing inside one long Whisper chunk receive distinct embeddings.
+    """
+    if not raw_segments:
+        return []
+    out = []
+    for seg in raw_segments:
+        words = seg.get("words") or []
+        seg_dur = float(seg.get("end", 0.0)) - float(seg.get("start", 0.0))
+        if len(words) < 2 or seg_dur < (min_piece_sec * 2.0):
+            out.append(seg)
+            continue
+
+        cuts = [0]
+        total_end = float(words[-1].get("end", seg.get("end", 0.0)))
+        for i in range(len(words) - 1):
+            w_cur = words[i]
+            w_next = words[i + 1]
+            gap = float(w_next.get("start", 0.0)) - float(w_cur.get("end", 0.0))
+            w_txt = str(w_cur.get("word", "")).rstrip()
+            is_punct = bool(w_txt and w_txt[-1] in ".?!…")
+            if gap >= min_gap_sec or (is_punct and gap >= punct_gap_sec):
+                left_start = float(words[cuts[-1]].get("start", seg.get("start", 0.0)))
+                left_end = float(w_cur.get("end", left_start))
+                right_start = float(w_next.get("start", left_end))
+                if (left_end - left_start) >= min_piece_sec and (total_end - right_start) >= min_piece_sec:
+                    cuts.append(i + 1)
+
+        if len(cuts) == 1:
+            out.append(seg)
+            continue
+
+        cuts.append(len(words))
+        for k in range(len(cuts) - 1):
+            piece_words = words[cuts[k]:cuts[k + 1]]
+            if not piece_words:
+                continue
+            parts = []
+            for j, pw in enumerate(piece_words):
+                wt = str(pw.get("word", ""))
+                if j > 0 and wt and not wt[0].isspace() and parts and not parts[-1][-1].isspace():
+                    parts.append(" ")
+                parts.append(wt)
+            piece_text = "".join(parts).strip()
+            if not piece_text:
+                continue
+            p_start = round(float(piece_words[0].get("start", seg.get("start", 0.0))), 2)
+            p_end = round(max(p_start + 0.05, float(piece_words[-1].get("end", seg.get("end", p_start + 0.05)))), 2)
+            probs = [float(pw["probability"]) for pw in piece_words if isinstance(pw.get("probability"), (int, float))]
+            conf = round(sum(probs) / len(probs), 3) if probs else seg.get("confidence")
+            out.append({
+                **seg,
+                "start": p_start,
+                "end": p_end,
+                "text": piece_text,
+                "confidence": conf,
+                "words": piece_words,
+            })
+    return out
+
+
+def cluster_speakers(embeddings, durations, max_speakers, exact=False, min_silhouette=None, pitches=None):
     """
     Assigns a speaker label to every embedding, never using more than `max_speakers` labels.
 
-    1. The speakers are found on the longer (more reliable) segments only.
-    2. The number of speakers k in [1, max_speakers] is chosen by silhouette score
-       (or fixed to max_speakers when `exact` is set).
-    3. Every other segment is assigned to the nearest speaker centroid.
-    4. In auto mode, clusters with a tiny share of the speech are merged into the nearest one.
+    1. Handles small clip edge cases (including 2-segment recordings) explicitly.
+    2. Finds speakers on longer segments first, automatically falling back to all valid
+       segments (>= MIN_EMBED_SEC) if longer segments alone yield only 1 speaker.
+    3. Selects k in [1, max_speakers] via silhouette score, with centroid + voiced F0 rescue
+       for clearly separated voices (e.g. male vs female) even on unbalanced turns.
+    4. Merges tiny noise slivers while keeping distinct minority speakers.
     """
     import numpy as np
 
@@ -670,40 +807,110 @@ def cluster_speakers(embeddings, durations, max_speakers, exact=False, min_silho
 
     X = np.array(embeddings, dtype=np.float64)
     dur = np.array(durations, dtype=np.float64)
+    p_arr = (
+        np.array(pitches, dtype=np.float64)
+        if pitches is not None and len(pitches) == n
+        else np.zeros(n, dtype=np.float64)
+    )
 
-    reliable = np.where(dur >= RELIABLE_EMBED_SEC)[0]
-    if len(reliable) < max(4, max_speakers + 1):
-        reliable = np.arange(n)
-    Xr = X[reliable]
-    k_max = min(max_speakers, len(reliable) - 1)
-    if k_max < 2:
-        return [0] * n
+    def _pitch_octaves(idx_a, idx_b):
+        va = [float(p_arr[i]) for i in idx_a if p_arr[i] > 60.0]
+        vb = [float(p_arr[i]) for i in idx_b if p_arr[i] > 60.0]
+        if not va or not vb:
+            return 0.0
+        ma, mb = float(np.median(va)), float(np.median(vb))
+        return abs(math.log2(ma / mb)) if (ma > 0 and mb > 0) else 0.0
 
-    def fit(k):
-        return AgglomerativeClustering(n_clusters=k, metric="cosine", linkage="average").fit_predict(Xr)
+    # Special case: exactly 2 segments (cannot compute silhouette, yet a 2-turn clip is a common test).
+    if n == 2:
+        if exact:
+            return [0, 1]
+        sim = float(_cosine_sims(X[0:1], X[1:2])[0, 0])
+        oct_diff = _pitch_octaves([0], [1])
+        if sim < 0.42 or (oct_diff >= 0.40 and sim < 0.72):
+            print(f"[*] Selected 2 speaker(s) from 2 segments (cosine={sim:.3f}, pitch_octaves={oct_diff:.2f}).")
+            return [0, 1]
+        print(f"[*] 2 segments appear to be 1 speaker (cosine={sim:.3f}, pitch_octaves={oct_diff:.2f}).")
+        return [0, 0]
 
-    if exact:
-        best_k, best_labels = k_max, fit(k_max)
-    else:
-        best_k, best_labels, best_score = 1, np.zeros(len(reliable), dtype=int), -1.0
+    def _run_clustering(subset_indices):
+        Xr = X[subset_indices]
+        pr = p_arr[subset_indices]
+        dr = dur[subset_indices]
+        k_max = min(max_speakers, len(subset_indices) - 1)
+        if k_max < 2:
+            return 1, np.zeros(len(subset_indices), dtype=int), -1.0
+
+        def fit(k):
+            return AgglomerativeClustering(n_clusters=k, metric="cosine", linkage="average").fit_predict(Xr)
+
+        if exact:
+            return k_max, fit(k_max), 1.0
+
+        best_k, best_labels, best_score = 1, np.zeros(len(subset_indices), dtype=int), -1.0
+        labels_by_k = {}
         for k in range(2, k_max + 1):
             labels_k = fit(k)
             if len(set(labels_k)) < 2:
                 continue
+            labels_by_k[k] = labels_k
             score = float(silhouette_score(Xr, labels_k, metric="cosine"))
             print(f"    k={k}: silhouette={score:.3f}")
             if score > best_score:
                 best_k, best_labels, best_score = k, labels_k, score
-        if best_score < min_sil:
-            print(f"[*] Speakers are not clearly separable (best silhouette {best_score:.3f} < {min_sil}); using 1 speaker.")
-            return [0] * n
-        print(f"[*] Selected {best_k} speaker(s) (silhouette {best_score:.3f}, max {max_speakers}).")
 
+        if best_score >= min_sil:
+            print(f"[*] Selected {best_k} speaker(s) (silhouette {best_score:.3f}, max {max_speakers}).")
+            return best_k, best_labels, best_score
+
+        # Rescue check for k=2 when voices have low centroid similarity or male/female F0 separation
+        # despite unbalanced turns or room noise lowering the silhouette score.
+        if 2 in labels_by_k and max_speakers >= 2:
+            labels_2 = labels_by_k[2]
+            idx0 = [i for i, lab in enumerate(labels_2) if lab == 0]
+            idx1 = [i for i, lab in enumerate(labels_2) if lab == 1]
+            total_r = float(dr.sum()) or 1.0
+            dur0, dur1 = float(dr[idx0].sum()), float(dr[idx1].sum())
+            if min(dur0, dur1) >= 0.6 and min(dur0, dur1) / total_r >= 0.03:
+                c0 = Xr[idx0].mean(axis=0, keepdims=True)
+                c1 = Xr[idx1].mean(axis=0, keepdims=True)
+                pair_sim = float(_cosine_sims(c0, c1)[0, 0])
+                v0 = [float(pr[i]) for i in idx0 if pr[i] > 60.0]
+                v1 = [float(pr[i]) for i in idx1 if pr[i] > 60.0]
+                oct_diff = abs(math.log2(float(np.median(v0)) / float(np.median(v1)))) if (v0 and v1) else 0.0
+                if (pair_sim < 0.32 and best_score >= 0.02) or (oct_diff >= 0.45 and pair_sim < 0.62):
+                    print(
+                        f"[*] Selected 2 speaker(s) via voice separation "
+                        f"(silhouette={best_score:.3f}, centroid_sim={pair_sim:.3f}, pitch_octaves={oct_diff:.2f})."
+                    )
+                    return 2, labels_2, best_score
+
+        return 1, np.zeros(len(subset_indices), dtype=int), best_score
+
+    reliable = np.where(dur >= RELIABLE_EMBED_SEC)[0]
+    if len(reliable) < max(4, max_speakers + 1):
+        reliable = np.arange(n)
+
+    best_k, best_labels, best_score = _run_clustering(reliable)
+
+    # If >=1.0s segments alone showed 1 speaker, re-check including shorter valid segments (0.6-0.99s)
+    if best_k < 2 and not exact and len(reliable) < n:
+        all_idx = np.arange(n)
+        k_all, labels_all, score_all = _run_clustering(all_idx)
+        if k_all >= 2:
+            reliable = all_idx
+            best_k, best_labels, best_score = k_all, labels_all, score_all
+
+    if best_k < 2:
+        print(f"[*] Speakers are not clearly separable (best silhouette {best_score:.3f} < {min_sil}); using 1 speaker.")
+        return [0] * n
+
+    Xr = X[reliable]
     centroids = np.array([Xr[best_labels == c].mean(axis=0) for c in range(best_k)])
     labels = _cosine_sims(X, centroids).argmax(axis=1)
 
     if not exact and best_k > 1:
-        # Merge clusters that hold only a sliver of the speech (usually noise / outliers).
+        # Merge noise slivers, while preserving distinct minority speakers (e.g. 1.5-5% share).
         while True:
             present = sorted(set(labels.tolist()))
             if len(present) < 2:
@@ -711,12 +918,21 @@ def cluster_speakers(embeddings, durations, max_speakers, exact=False, min_silho
             shares = {c: dur[labels == c].sum() for c in present}
             total = sum(shares.values()) or 1.0
             smallest = min(present, key=lambda c: shares[c])
-            if shares[smallest] / total >= MIN_CLUSTER_SHARE:
+            share = shares[smallest] / total
+            if share >= MIN_CLUSTER_SHARE:
                 break
             others = [c for c in present if c != smallest]
             cents = np.array([X[labels == c].mean(axis=0) for c in others])
             own = X[labels == smallest].mean(axis=0, keepdims=True)
-            target = others[int(_cosine_sims(own, cents).argmax())]
+            sims_to_others = _cosine_sims(own, cents)[0]
+            best_pos = int(sims_to_others.argmax())
+            target = others[best_pos]
+            sim_to_target = float(sims_to_others[best_pos])
+            idx_small = [i for i, lab in enumerate(labels) if lab == smallest]
+            idx_target = [i for i, lab in enumerate(labels) if lab == target]
+            oct_diff = _pitch_octaves(idx_small, idx_target)
+            if share >= 0.015 and (sim_to_target < 0.35 or oct_diff >= 0.45):
+                break
             labels[labels == smallest] = target
 
     # Compact label ids
@@ -769,7 +985,15 @@ def perform_speaker_diarization(samples, sr, raw_segments, max_speakers=None, ex
 
     labels = [0] * len(raw_segments)
     if embeddings:
-        emb_labels = cluster_speakers(embeddings, durations, max_speakers, exact, min_silhouette=min_silhouette)
+        emb_pitches = [pitches[i] for i in embedded_idx]
+        emb_labels = cluster_speakers(
+            embeddings,
+            durations,
+            max_speakers,
+            exact,
+            min_silhouette=min_silhouette,
+            pitches=emb_pitches,
+        )
         assigned = {i: lab for i, lab in zip(embedded_idx, emb_labels)}
         midpoints = [(float(s["start"]) + float(s["end"])) * 0.5 for s in raw_segments]
         for idx in range(len(raw_segments)):
@@ -1335,6 +1559,12 @@ class TranscribeHandler(BaseHTTPRequestHandler):
                     set_job_progress(job_id, 30, f"Loading Whisper ({model_name})...")
                 whisper_model = get_whisper_model(model_name, device, compute_type)
 
+                try:
+                    with wave.open(wav_path, "rb") as wf:
+                        wav_duration = wf.getnframes() / float(wf.getframerate() or 16000)
+                except Exception:
+                    wav_duration = 0.0
+
                 transcribe_kwargs = {
                     "beam_size": beam_size,
                     "best_of": 5,
@@ -1346,7 +1576,7 @@ class TranscribeHandler(BaseHTTPRequestHandler):
                     "vad_filter": True,
                     "vad_parameters": dict(
                         min_silence_duration_ms=min_silence_ms,
-                        speech_pad_ms=200,
+                        speech_pad_ms=100,
                         threshold=vad_threshold,
                     ),
                 }
@@ -1359,7 +1589,9 @@ class TranscribeHandler(BaseHTTPRequestHandler):
 
                 segments_generator = None
                 info = None
-                if use_batched and hasattr(whisper_model, "model"):
+                # BatchedInferencePipeline merges VAD regions up to 30s, which harms short-turn diarization.
+                # Only enable it on longer recordings (>= 120s).
+                if use_batched and wav_duration >= 120.0 and hasattr(whisper_model, "model"):
                     try:
                         from faster_whisper import BatchedInferencePipeline
                         batched_pipe = BatchedInferencePipeline(model=whisper_model)
@@ -1405,7 +1637,12 @@ class TranscribeHandler(BaseHTTPRequestHandler):
                         pct = 35 + int(47 * min(1.0, float(seg.end) / total_dur))
                         set_job_progress(job_id, pct, f"Transcribing {int(seg.end)}s / {int(total_dur)}s...")
 
-                print(f"[+] Whisper produced {len(raw_results)} segments.")
+                raw_count = len(raw_results)
+                raw_results = split_segments_at_pauses(raw_results)
+                if len(raw_results) != raw_count:
+                    print(f"[+] Whisper produced {raw_count} segments (split at pauses -> {len(raw_results)} turns).")
+                else:
+                    print(f"[+] Whisper produced {raw_count} segments.")
 
                 if is_job_cancelled(job_id):
                     return self._json(499, {"status": "cancelled", "error": "Cancelled by user"})
@@ -1424,7 +1661,11 @@ class TranscribeHandler(BaseHTTPRequestHandler):
             if job_id:
                 set_job_progress(job_id, 96, "Saving transcript...")
 
-            print(f"[+] Diarization complete: {len(speaker_metadata)} speaker(s) ({diarizer_type}).")
+            f0_summary = ", ".join(
+                f"{s['name']}={s['pitchF0']}Hz" if s.get("pitchF0") else f"{s['name']}=?"
+                for s in speaker_metadata.values()
+            )
+            print(f"[+] Diarization complete: {len(speaker_metadata)} speaker(s) ({diarizer_type}) [{f0_summary}].")
             speakers_summary = "\n".join(
                 f"- {s['name']}: {s['segmentsCount']} segment(s)" for s in speaker_metadata.values()
             )
